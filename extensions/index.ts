@@ -1,0 +1,521 @@
+/**
+ * pi-fast-mode — OpenAI Codex fast mode for pi.
+ *
+ * Registers an API-layer stream override for `openai-codex-responses` that
+ * injects `service_tier: "priority"` into requests when fast mode is enabled
+ * and the active model is on the supported set. pi-ai's built-in
+ * `openai-codex-responses` implementation turns `options.serviceTier` into the
+ * `service_tier` request body field AND applies its priority cost multiplier,
+ * so passing the option keeps both the request and the footer cost accounting
+ * consistent.
+ *
+ * Model selection is a three-part override, evaluated per request:
+ *   supported = (built-in defaults ∪ allowlist) − blocklist
+ * and the model's API must have an `ApiTierSpec`. Built-in defaults ship for
+ * the OpenAI Codex models on the official fast-mode rate card; `allowlist`
+ * adds models (e.g. custom models.json entries, or future spec'd providers);
+ * `blocklist` excludes models you do not want tiered.
+ *
+ * service_tier is an OpenAI Responses concept: only APIs with an ApiTierSpec
+ * participate. Anthropic Messages, Google, and completions-style APIs have no
+ * tier and are never touched, even if they appear in the allowlist.
+ *
+ * Cost correction: pi-ai's built-in multiplier is stale for GPT-5.6 — it
+ * applies 2x for every model except `gpt-5.5` (2.5x) — while OpenAI's Codex
+ * rate card charges 2.5x for GPT-5.6 fast mode. This extension scales the
+ * displayed usage cost back up by 1.25x for GPT-5.6 models so the footer/session
+ * cost reflects the real credit burn. Token counts are real and untouched.
+ * Remove the GPT-5.6 correction entry if pi-ai's multiplier is fixed upstream.
+ */
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
+import type {
+	Api,
+	AssistantMessageEvent,
+	AssistantMessageEventStream,
+	Context,
+	Model,
+	ModelThinkingLevel,
+	SimpleStreamOptions,
+} from "@earendil-works/pi-ai";
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
+export const SERVICE_TIERS = ["priority", "flex", "default", "auto", "scale"] as const;
+export type ServiceTier = (typeof SERVICE_TIERS)[number];
+
+export const CONFIG_BASENAME = "pi-fast-mode.json";
+export const REGISTRATION_PREFIX = "pi-fast-mode";
+export const STATUS_KEY = "pi-fast-mode";
+export const COMMAND_FAST = "fast";
+export const FLAG_FAST = "fast";
+
+/** Official Codex fast-mode credit multipliers per model (OpenAI Codex rate card). */
+export const OFFICIAL_FAST_MULTIPLIER: Record<string, number> = {
+	"gpt-5.6-sol": 2.5,
+	"gpt-5.6-terra": 2.5,
+	"gpt-5.6-luna": 2.5,
+	"gpt-5.5": 2.5,
+	"gpt-5.4": 2,
+};
+
+/** Built-in supported models for the OpenAI Codex provider. */
+export const DEFAULT_FAST_MODE_MODELS = [
+	"openai-codex/gpt-5.6-sol",
+	"openai-codex/gpt-5.6-terra",
+	"openai-codex/gpt-5.6-luna",
+	"openai-codex/gpt-5.5",
+	"openai-codex/gpt-5.4",
+] as const;
+
+/**
+ * How a fast tier is applied for one API. One spec per API; everything else in
+ * the extension is driven off these.
+ */
+export interface ApiTierSpec {
+	api: Api;
+	/** Tiers this API accepts. openai-codex-responses accepts only `priority`. */
+	supportedTiers: readonly ServiceTier[];
+	/** Default `provider/model` allowlist entries shipped for this API. */
+	defaultModels: readonly string[];
+	/** Invoke the raw pi-ai stream for this API (no tier applied). */
+	streamRaw: (
+		model: Model<Api>,
+		context: Context,
+		options: SimpleStreamOptions & { serviceTier?: ServiceTier; reasoningEffort?: ModelThinkingLevel | "none" },
+	) => AssistantMessageEventStream;
+}
+
+export const CODEX_RESPONSES_SPEC: ApiTierSpec = {
+	api: "openai-codex-responses",
+	supportedTiers: ["priority"],
+	defaultModels: [...DEFAULT_FAST_MODE_MODELS],
+	streamRaw: (model, context, options) =>
+		openAICodexResponsesApi().streamSimple(model as Model<"openai-codex-responses">, context, options),
+};
+
+export const SPECS: readonly ApiTierSpec[] = [CODEX_RESPONSES_SPEC];
+
+export interface SupportedModel {
+	provider: string;
+	id: string;
+}
+
+export interface ConfigFile {
+	persistState?: boolean;
+	active?: boolean;
+	serviceTier?: ServiceTier;
+	allowlist?: string[];
+	blocklist?: string[];
+}
+
+export interface ResolvedConfig {
+	configPath: string;
+	persistState: boolean;
+	active: boolean;
+	serviceTier: ServiceTier;
+	allowlist: SupportedModel[];
+	blocklist: SupportedModel[];
+}
+
+export interface RuntimeState {
+	active: boolean;
+	serviceTier: ServiceTier;
+}
+
+/** The model membership override applied per request. */
+export interface ModelFilter {
+	defaults: readonly SupportedModel[];
+	allowlist: readonly SupportedModel[];
+	blocklist: readonly SupportedModel[];
+}
+
+type OpenAIServiceTierOptions = SimpleStreamOptions & {
+	serviceTier?: ServiceTier;
+	reasoningEffort?: ModelThinkingLevel | "none";
+};
+
+const DEFAULT_CONFIG: Required<Pick<ConfigFile, "persistState" | "active" | "serviceTier" | "allowlist" | "blocklist">> = {
+	persistState: true,
+	active: false,
+	serviceTier: "priority",
+	allowlist: [],
+	blocklist: [],
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function isServiceTier(value: unknown): value is ServiceTier {
+	return typeof value === "string" && (SERVICE_TIERS as readonly string[]).includes(value);
+}
+
+export function parseModelKey(value: string): SupportedModel | undefined {
+	const trimmed = value.trim();
+	const slash = trimmed.indexOf("/");
+	if (slash <= 0 || slash >= trimmed.length - 1) return undefined;
+	const provider = trimmed.slice(0, slash).trim();
+	const id = trimmed.slice(slash + 1).trim();
+	return provider && id ? { provider, id } : undefined;
+}
+
+export function normalizeModelKeys(value: unknown): string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) return undefined;
+	const keys = value
+		.filter((entry): entry is string => typeof entry === "string")
+		.map((entry) => parseModelKey(entry))
+		.filter((entry): entry is SupportedModel => entry !== undefined)
+		.map((entry) => `${entry.provider}/${entry.id}`);
+	return [...new Set(keys)];
+}
+
+export function parseModels(value: unknown): SupportedModel[] | undefined {
+	const keys = normalizeModelKeys(value);
+	if (keys === undefined) return undefined;
+	return keys
+		.map((key) => parseModelKey(key))
+		.filter((entry): entry is SupportedModel => entry !== undefined);
+}
+
+export function configPaths(cwd: string, home = homedir()): { project: string; global: string } {
+	return {
+		project: join(cwd, ".pi", "extensions", CONFIG_BASENAME),
+		global: join(home, ".pi", "agent", "extensions", CONFIG_BASENAME),
+	};
+}
+
+export function readConfig(path: string): ConfigFile | undefined {
+	if (!existsSync(path)) return undefined;
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+		if (!isRecord(parsed)) return {};
+		const config: ConfigFile = {};
+		if (typeof parsed.persistState === "boolean") config.persistState = parsed.persistState;
+		if (typeof parsed.active === "boolean") config.active = parsed.active;
+		if (isServiceTier(parsed.serviceTier)) config.serviceTier = parsed.serviceTier;
+		const allowlist = normalizeModelKeys(parsed.allowlist);
+		if (allowlist !== undefined) config.allowlist = allowlist;
+		const blocklist = normalizeModelKeys(parsed.blocklist);
+		if (blocklist !== undefined) config.blocklist = blocklist;
+		return config;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(`[${STATUS_KEY}] Failed to read ${path}: ${message}`);
+		return undefined;
+	}
+}
+
+export function writeConfig(path: string, config: ConfigFile): void {
+	try {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(`[${STATUS_KEY}] Failed to write ${path}: ${message}`);
+	}
+}
+
+export function defaultResolvedConfig(cwd: string, home = homedir()): ResolvedConfig {
+	const paths = configPaths(cwd, home);
+	return {
+		configPath: paths.global,
+		persistState: DEFAULT_CONFIG.persistState,
+		active: DEFAULT_CONFIG.active,
+		serviceTier: DEFAULT_CONFIG.serviceTier,
+		allowlist: [],
+		blocklist: [],
+	};
+}
+
+export function resolveConfig(cwd: string, home = homedir()): ResolvedConfig {
+	const paths = configPaths(cwd, home);
+	const globalConfig = readConfig(paths.global) ?? {};
+	const projectConfig = readConfig(paths.project) ?? {};
+	const merged: ConfigFile = { ...DEFAULT_CONFIG, ...globalConfig, ...projectConfig };
+	return {
+		configPath: existsSync(paths.project) ? paths.project : paths.global,
+		persistState: merged.persistState ?? DEFAULT_CONFIG.persistState,
+		active: merged.active ?? DEFAULT_CONFIG.active,
+		serviceTier: merged.serviceTier ?? DEFAULT_CONFIG.serviceTier,
+		allowlist: parseModels(merged.allowlist) ?? [],
+		blocklist: parseModels(merged.blocklist) ?? [],
+	};
+}
+
+export function getModelsForApi(specs: readonly ApiTierSpec[], api: Api | undefined): readonly ServiceTier[] {
+	const spec = specs.find((entry) => entry.api === api);
+	return spec?.supportedTiers ?? [];
+}
+
+function contains(list: readonly SupportedModel[], model: Pick<Model<Api>, "provider" | "id">): boolean {
+	return list.some((entry) => entry.provider === model.provider && entry.id === model.id);
+}
+
+/** Merge every spec's built-in defaults into one filter list. */
+export function buildModelFilter(specs: readonly ApiTierSpec[], config: {
+	allowlist?: readonly SupportedModel[];
+	blocklist?: readonly SupportedModel[];
+}): ModelFilter {
+	const defaults = specs
+		.flatMap((spec) => spec.defaultModels)
+		.map((key) => parseModelKey(key))
+		.filter((entry): entry is SupportedModel => entry !== undefined);
+	return { defaults, allowlist: config.allowlist ?? [], blocklist: config.blocklist ?? [] };
+}
+
+/** True when the model may be tiered: its API is spec'd and it survives the default/allow/block override. */
+export function isModelAllowed(
+	model: Pick<Model<Api>, "provider" | "id" | "api"> | undefined,
+	specs: readonly ApiTierSpec[],
+	filter: ModelFilter,
+): boolean {
+	if (!model) return false;
+	if (getModelsForApi(specs, model.api).length === 0) return false;
+	if (!contains(filter.defaults, model) && !contains(filter.allowlist, model)) return false;
+	if (contains(filter.blocklist, model)) return false;
+	return true;
+}
+
+/** The tier to send for this model, or undefined when fast mode should not apply. */
+export function resolveServiceTierForModel(
+	model: Pick<Model<Api>, "provider" | "id" | "api"> | undefined,
+	state: RuntimeState,
+	specs: readonly ApiTierSpec[],
+	filter: ModelFilter,
+): ServiceTier | undefined {
+	if (!state.active) return undefined;
+	if (!isModelAllowed(model, specs, filter)) return undefined;
+	const tiers = getModelsForApi(specs, model?.api);
+	return tiers.includes(state.serviceTier) ? state.serviceTier : undefined;
+}
+
+/**
+ * pi-ai's built-in priority multiplier mirrors `getServiceTierCostMultiplier`
+ * in its openai-codex-responses API: 2.5x only for `gpt-5.5`, else 2x.
+ */
+export function builtinServiceTierMultiplier(modelId: string): number {
+	return modelId === "gpt-5.5" ? 2.5 : 2;
+}
+
+/**
+ * Factor to scale displayed usage cost by, to correct pi-ai's stale 2x
+ * multiplier back to the official rate-card multiplier. Only GPT-5.6 needs a
+ * correction (2.5/2 = 1.25); GPT-5.4/5.5 already match.
+ */
+export function costCorrectionFactor(modelId: string, serviceTier: ServiceTier): number {
+	if (serviceTier !== "priority") return 1;
+	const official = OFFICIAL_FAST_MULTIPLIER[modelId];
+	if (official === undefined) return 1;
+	return official / builtinServiceTierMultiplier(modelId);
+}
+
+function scaleUsageCost(holder: { usage?: { cost?: Partial<{ input: number; output: number; cacheRead: number; cacheWrite: number; total: number }> } } | undefined | null, factor: number): void {
+	const cost = holder?.usage?.cost;
+	if (!cost || typeof cost.input !== "number") return;
+	const input = cost.input * factor;
+	const output = (cost.output ?? 0) * factor;
+	const cacheRead = (cost.cacheRead ?? 0) * factor;
+	const cacheWrite = (cost.cacheWrite ?? 0) * factor;
+	cost.input = input;
+	cost.output = output;
+	cost.cacheRead = cacheRead;
+	cost.cacheWrite = cacheWrite;
+	cost.total = input + output + cacheRead + cacheWrite;
+}
+
+function scaleEventUsage(event: AssistantMessageEvent, factor: number): void {
+	if (event.type === "done") scaleUsageCost(event.message, factor);
+	else if (event.type === "error") scaleUsageCost(event.error, factor);
+}
+
+/**
+ * Wrap the raw stream, forwarding every event unchanged but scaling usage cost
+ * on the terminal done/error events while pi-ai's multiplier under-reports.
+ */
+export function correctUsageEvents(stream: AssistantMessageEventStream, factor: number): AssistantMessageEventStream {
+	if (factor === 1) return stream;
+	const out = createAssistantMessageEventStream();
+	void (async () => {
+		try {
+			for await (const event of stream) {
+				scaleEventUsage(event, factor);
+				out.push(event);
+			}
+			out.end(await stream.result());
+		} catch (error) {
+			out.end();
+			throw error;
+		}
+	})();
+	return out;
+}
+
+/**
+ * Rebuild request options the way pi's provider layer expects: forward the
+ * caller's options, keep reasoning as a concrete effort, cap maxTokens, and add
+ * `serviceTier` only when a tier applies for this model. Mirrors the option
+ * handling of the published pi-openai-service-tier extension.
+ */
+export function buildFullOpenAIOptions(
+	model: Model<Api>,
+	options: SimpleStreamOptions | undefined,
+	serviceTier: ServiceTier | undefined,
+): OpenAIServiceTierOptions {
+	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
+	const result: OpenAIServiceTierOptions = {
+		...options,
+		maxTokens: options?.maxTokens ?? (model.maxTokens > 0 ? Math.min(model.maxTokens, 32_000) : undefined),
+		reasoningEffort,
+	};
+	if (serviceTier) result.serviceTier = serviceTier;
+	return result;
+}
+
+function getConfigCwd(ctx: ExtensionContext): string {
+	return ctx.cwd || process.cwd();
+}
+
+export function statusText(
+	model: Pick<Model<Api>, "provider" | "id" | "api"> | undefined,
+	state: RuntimeState,
+	specs: readonly ApiTierSpec[],
+	filter: ModelFilter,
+): string {
+	const tier = resolveServiceTierForModel(model, state, specs, filter);
+	if (tier && model) {
+		const mult = OFFICIAL_FAST_MULTIPLIER[model.id];
+		return mult !== undefined ? `FAST ${model.id} ${mult}x` : `FAST ${model.id}`;
+	}
+	if (state.active && model) {
+		if (isModelAllowed(model, specs, filter)) {
+			return `fast mode: ${state.serviceTier} tier unsupported on ${model.api}`;
+		}
+		return `fast mode: unsupported model (${model.provider}/${model.id})`;
+	}
+	return "";
+}
+
+export default function piFastMode(pi: ExtensionAPI): void {
+	let config: ResolvedConfig = defaultResolvedConfig(process.cwd());
+	let state: RuntimeState = { active: config.active, serviceTier: config.serviceTier };
+
+	function refreshConfig(ctx: ExtensionContext): ResolvedConfig {
+		config = resolveConfig(getConfigCwd(ctx));
+		state = { active: config.active, serviceTier: config.serviceTier };
+		return config;
+	}
+
+	function persistState(next: ResolvedConfig): void {
+		if (!next.persistState) return;
+		writeConfig(next.configPath, {
+			...(readConfig(next.configPath) ?? undefined),
+			active: state.active,
+			serviceTier: state.serviceTier,
+			allowlist: next.allowlist.map((model) => `${model.provider}/${model.id}`),
+			blocklist: next.blocklist.map((model) => `${model.provider}/${model.id}`),
+		});
+	}
+
+	function updateStatus(ctx: ExtensionContext): void {
+		const filter = buildModelFilter(SPECS, config);
+		ctx.ui.setStatus(STATUS_KEY, statusText(ctx.model, state, SPECS, filter) || undefined);
+	}
+
+	function supportedListText(filter: ModelFilter): string {
+		const all = [...filter.defaults, ...filter.allowlist, ...filter.blocklist];
+		const keys = [...new Set(all.map((model) => `${model.provider}/${model.id}`))];
+		return keys.join(", ") || "none";
+	}
+
+	function notifyStatus(ctx: ExtensionContext): void {
+		const filter = buildModelFilter(SPECS, config);
+		const tier = resolveServiceTierForModel(ctx.model, state, SPECS, filter);
+		const modelKey = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
+		if (tier) {
+			ctx.ui.notify(`Fast mode: ${tier} service tier for ${modelKey}. Cost accounting includes the priority multiplier.`, "info");
+			return;
+		}
+		if (state.active) {
+			ctx.ui.notify(
+				`Fast mode is on, but ${modelKey} is not tierable (missing API spec, not on the default/allowlist, or blocked). Mentioned models: ${supportedListText(filter)}.`,
+				"warning",
+			);
+			return;
+		}
+		ctx.ui.notify(`Fast mode is off. Current model: ${modelKey}.`, "info");
+	}
+
+	function setActive(ctx: ExtensionContext, active: boolean): void {
+		refreshConfig(ctx);
+		state.active = active;
+		persistState(config);
+		updateStatus(ctx);
+		notifyStatus(ctx);
+	}
+
+	pi.registerFlag(FLAG_FAST, {
+		description: "Start with OpenAI Codex fast mode (priority service tier) enabled",
+		type: "boolean",
+		default: false,
+	});
+
+	for (const spec of SPECS) {
+		pi.registerProvider(`${REGISTRATION_PREFIX}:${spec.api}`, {
+			api: spec.api,
+			streamSimple(model, context, options) {
+				const filter = buildModelFilter(SPECS, config);
+				const serviceTier = resolveServiceTierForModel(model, state, SPECS, filter);
+				const stream = spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, serviceTier) as never);
+				if (!serviceTier) return stream;
+				return correctUsageEvents(stream, costCorrectionFactor(model.id, serviceTier));
+			},
+		});
+	}
+
+	pi.registerCommand(COMMAND_FAST, {
+		description: "Toggle OpenAI Codex fast mode (priority service tier); /fast [on|off|status]",
+		getArgumentCompletions: (prefix) => {
+			const values = ["on", "off", "status"];
+			const items = values.filter((value) => value.startsWith(prefix.trim().toLowerCase()));
+			return items.length ? items.map((value) => ({ value, label: value })) : null;
+		},
+		handler: async (args, ctx) => {
+			const arg = args.trim().toLowerCase();
+			if (!arg) return setActive(ctx, !state.active);
+			if (arg === "on") return setActive(ctx, true);
+			if (arg === "off") return setActive(ctx, false);
+			if (arg === "status") {
+				refreshConfig(ctx);
+				updateStatus(ctx);
+				return notifyStatus(ctx);
+			}
+			ctx.ui.notify("Usage: /fast [on|off|status]", "error");
+		},
+	});
+
+	pi.on("session_start", async (_event, ctx) => {
+		refreshConfig(ctx);
+		if (pi.getFlag(FLAG_FAST) === true) {
+			state.active = true;
+			state.serviceTier = "priority";
+			persistState(config);
+		}
+		updateStatus(ctx);
+		if (state.active) notifyStatus(ctx);
+	});
+
+	pi.on("model_select", async (_event, ctx) => {
+		updateStatus(ctx);
+	});
+
+	pi.on("session_shutdown", async (_event, ctx) => {
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+	});
+}

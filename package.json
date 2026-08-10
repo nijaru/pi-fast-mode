@@ -1,0 +1,49 @@
+{
+  "name": "pi-fast-mode",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Toggle OpenAI Codex fast mode (priority service tier) in pi, with correct footer cost accounting.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "fast-mode",
+    "service-tier",
+    "priority",
+    "openai",
+    "codex"
+  ],
+  "license": "MIT",
+  "author": "Nick Naru <nick@nijaru.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nijaru/pi-fast-mode.git"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "scripts": {
+    "test": "bun test",
+    "lint": "oxlint extensions/ tests/",
+    "typecheck": "tsc --noEmit",
+    "check": "bun test && oxlint extensions/ tests/ && tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.84.0",
+    "@earendil-works/pi-coding-agent": "^0.84.0",
+    "@types/bun": "latest",
+    "oxlint": "latest",
+    "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ]
+}
