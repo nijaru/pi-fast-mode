@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import {
 	buildModelFilter,
 	applyFastModePricing,
@@ -16,6 +17,7 @@ import {
 	resolveServiceTierForModel,
 	SPECS,
 	statusText,
+	withFastModePricing,
 	writeConfig,
 } from "../extensions/index.ts";
 
@@ -283,6 +285,41 @@ function captureWarnings(fn: () => void): string[] {
 	}
 	return captured;
 }
+
+describe("withFastModePricing", () => {
+	const model = {
+		id: "gpt-5.6-luna",
+		cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, tiers: [] },
+	};
+
+	test("recomputes cost from raw tokens on the done event, replacing prior pricing", async () => {
+		const raw = createAssistantMessageEventStream();
+		// Simulates pi-ai's flow: base cost 1e6×$0.2/1e6 + 0.5e6×$1.2/1e6 = $0.8, then its builtin ×2 = $1.6.
+		const usage = {
+			input: 1_000_000,
+			output: 500_000,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1_500_000,
+			cost: { input: 0.4, output: 1.2, cacheRead: 0, cacheWrite: 0, total: 1.6 },
+		};
+		raw.push({ type: "done", reason: "stop", message: { content: [], usage } } as never);
+		raw.end();
+
+		const wrapped = withFastModePricing(raw as never, model as never, 2.5);
+		const events: unknown[] = [];
+		for await (const event of wrapped) events.push(event);
+
+		const done = events[0] as { message: { usage: { cost: { input: number; total: number } } } };
+		expect(done.message.usage.cost.input).toBeCloseTo(0.5); // 1e6 × 0.2/1e6 × 2.5
+		expect(done.message.usage.cost.total).toBeCloseTo(2.0);
+	});
+
+	test("returns the stream untouched when multiplier is 1", () => {
+		const raw = createAssistantMessageEventStream();
+		expect(withFastModePricing(raw, model as never, 1)).toBe(raw);
+	});
+});
 
 describe("statusText", () => {
 	const filter = buildModelFilter(SPECS, {});
