@@ -4,8 +4,8 @@ import { dirname, join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
 	buildModelFilter,
-	builtinServiceTierMultiplier,
-	costCorrectionFactor,
+	applyFastModePricing,
+	fastModeMultiplier,
 	CONFIG_BASENAME,
 	DEFAULT_FAST_MODE_MODELS,
 	isModelAllowed,
@@ -145,7 +145,7 @@ describe("resolveServiceTierForModel", () => {
 	});
 });
 
-describe("pricing correction", () => {
+describe("fast-mode pricing", () => {
 	test("official multipliers per rate card", () => {
 		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.6-sol"]).toBe(2.5);
 		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.6-terra"]).toBe(2.5);
@@ -154,18 +154,55 @@ describe("pricing correction", () => {
 		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.4"]).toBe(2);
 	});
 
-	test("builtin multiplier mirrors pi-ai (2.5 only for gpt-5.5)", () => {
-		expect(builtinServiceTierMultiplier("gpt-5.5")).toBe(2.5);
-		expect(builtinServiceTierMultiplier("gpt-5.6-luna")).toBe(2);
-		expect(builtinServiceTierMultiplier("gpt-5.4")).toBe(2);
+	test("unknown models fall back to the 2x default", () => {
+		expect(fastModeMultiplier("gpt-5.6-luna")).toBe(2.5);
+		expect(fastModeMultiplier("gpt-5.5")).toBe(2.5);
+		expect(fastModeMultiplier("gpt-5.4")).toBe(2);
+		expect(fastModeMultiplier("deepseek-v4-flash")).toBe(2);
 	});
 
-	test("correction factor is 1.25 for GPT-5.6, 1 for 5.4/5.5, 1 for non-rated models", () => {
-		expect(costCorrectionFactor("gpt-5.6-luna", "priority")).toBe(1.25);
-		expect(costCorrectionFactor("gpt-5.6-sol", "priority")).toBe(1.25);
-		expect(costCorrectionFactor("gpt-5.5", "priority")).toBe(1);
-		expect(costCorrectionFactor("gpt-5.4", "priority")).toBe(1);
-		expect(costCorrectionFactor("deepseek-v4-flash", "priority")).toBe(1);
+	const luna = {
+		id: "gpt-5.6-luna",
+		cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, tiers: [] },
+	} as const;
+
+	test("recomputes cost from token counts × rates × official multiplier", () => {
+		const usage = { input: 1_000_000, output: 500_000, cacheRead: 0, cacheWrite: 0, cost: {} };
+		// base: 1e6×$0.2/1e6 + 0.5e6×$1.2/1e6 = 0.2 + 0.6 = 0.8; ×2.5 = 2.0
+		applyFastModePricing(luna as never, usage as never, 2.5);
+		const cost = usage.cost as { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+		expect(cost.input).toBeCloseTo(0.5);
+		expect(cost.output).toBeCloseTo(1.5);
+		expect(cost.total).toBeCloseTo(2.0);
+	});
+
+	test("selects the input-token cost tier before applying the multiplier", () => {
+		const tiered = {
+			id: "gpt-5.6-luna",
+			cost: {
+				input: 0.2,
+				output: 1.2,
+				cacheRead: 0.02,
+				cacheWrite: 0.25,
+				tiers: [{ inputTokensAbove: 272_000, input: 0.4, output: 1.8, cacheRead: 0.04, cacheWrite: 0.5 }],
+			},
+		} as const;
+		const usage = { input: 300_000, output: 100_000, cacheRead: 0, cacheWrite: 0, cost: {} };
+		// tier rates: 0.4 and 1.8; base = 0.12 + 0.18 = 0.30; ×2.5 = 0.75
+		applyFastModePricing(tiered as never, usage as never, 2.5);
+		const cost = usage.cost as { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+		expect(cost.input).toBeCloseTo(0.3);
+		expect(cost.output).toBeCloseTo(0.45);
+		expect(cost.total).toBeCloseTo(0.75);
+	});
+
+	test("cached-input cost is rate-card priced like pi-ai (cache reads count as input tokens for tier selection)", () => {
+		const usage = { input: 100_000, output: 10_000, cacheRead: 500_000, cacheWrite: 0, cost: {} };
+		// inputTokens for tier selection = 100k + 500k = 600k > 272k → tier rates.
+		applyFastModePricing({ ...luna, cost: { ...luna.cost, tiers: [{ inputTokensAbove: 272_000, input: 0.4, output: 1.8, cacheRead: 0.04, cacheWrite: 0.5 }] } } as never, usage as never, 2.5);
+		const cost = usage.cost as { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+		expect(cost.input).toBeCloseTo(0.1); // 100k × 0.4/1e6 × 2.5
+		expect(cost.cacheRead).toBeCloseTo(0.05); // 500k × 0.04/1e6 × 2.5
 	});
 });
 

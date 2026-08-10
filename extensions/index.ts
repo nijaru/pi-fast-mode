@@ -20,16 +20,15 @@
  * participate. Anthropic Messages, Google, and completions-style APIs have no
  * tier and are never touched, even if they appear in the allowlist.
  *
- * Cost correction: pi-ai's built-in multiplier is stale for GPT-5.6 — it
- * applies 2x for every model except `gpt-5.5` (2.5x) — while OpenAI's Codex
- * rate card charges 2.5x for GPT-5.6 fast mode. This extension scales the
- * displayed usage cost back up by 1.25x for GPT-5.6 models so the footer/session
- * cost reflects the real credit burn. Token counts are real and untouched.
- * Remove the GPT-5.6 correction entry if pi-ai's multiplier is fixed upstream.
+ * Cost accounting: the displayed cost is recomputed from raw token counts ×
+ * model.cost × the official rate-card multiplier (2.5x for GPT-5.6/5.5, 2x for
+ * GPT-5.4) on terminal stream events. This is independent of pi-ai's internal
+ * service-tier multiplier table, so it stays correct if pi-ai changes its
+ * internals. Token counts are real and never modified.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { calculateCost, clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import type {
 	Api,
@@ -296,55 +295,69 @@ export function resolveServiceTierForModel(
 }
 
 /**
- * pi-ai's built-in priority multiplier mirrors `getServiceTierCostMultiplier`
- * in its openai-codex-responses API: 2.5x only for `gpt-5.5`, else 2x.
+ * Official fast-mode credit multiplier for a model, from the OpenAI Codex rate
+ * card. Falls back to pi-ai's 2x default for models without a published rate.
  */
-export function builtinServiceTierMultiplier(modelId: string): number {
-	return modelId === "gpt-5.5" ? 2.5 : 2;
+export function fastModeMultiplier(modelId: string): number {
+	return OFFICIAL_FAST_MULTIPLIER[modelId] ?? 2;
+}
+
+interface CostableUsage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cacheWrite1h?: number;
+	cost: Partial<{ input: number; output: number; cacheRead: number; cacheWrite: number; total: number }>;
 }
 
 /**
- * Factor to scale displayed usage cost by, to correct pi-ai's stale 2x
- * multiplier back to the official rate-card multiplier. Only GPT-5.6 needs a
- * correction (2.5/2 = 1.25); GPT-5.4/5.5 already match.
+ * Recompute displayed fast-mode cost: pi-ai's `calculateCost` is idempotent — it
+ * reads only raw token counts and `model.cost`, never the previously stored
+ * cost — so re-running it cleanly replaces any prior (multiplied) pricing, then
+ * the official rate-card multiplier is applied. This depends on `model.cost`
+ * and pi-ai's tier logic, not on pi-ai's internal multiplier table.
  */
-export function costCorrectionFactor(modelId: string, serviceTier: ServiceTier): number {
-	if (serviceTier !== "priority") return 1;
-	const official = OFFICIAL_FAST_MULTIPLIER[modelId];
-	if (official === undefined) return 1;
-	return official / builtinServiceTierMultiplier(modelId);
+export function applyFastModePricing(model: Model<Api>, usage: CostableUsage, multiplier: number): void {
+	calculateCost(model as never, usage as never);
+	usage.cost.input = (usage.cost.input ?? 0) * multiplier;
+	usage.cost.output = (usage.cost.output ?? 0) * multiplier;
+	usage.cost.cacheRead = (usage.cost.cacheRead ?? 0) * multiplier;
+	usage.cost.cacheWrite = (usage.cost.cacheWrite ?? 0) * multiplier;
+	usage.cost.total = (usage.cost.input ?? 0) + (usage.cost.output ?? 0) + (usage.cost.cacheRead ?? 0) + (usage.cost.cacheWrite ?? 0);
 }
 
-function scaleUsageCost(holder: { usage?: { cost?: Partial<{ input: number; output: number; cacheRead: number; cacheWrite: number; total: number }> } } | undefined | null, factor: number): void {
-	const cost = holder?.usage?.cost;
-	if (!cost || typeof cost.input !== "number") return;
-	const input = cost.input * factor;
-	const output = (cost.output ?? 0) * factor;
-	const cacheRead = (cost.cacheRead ?? 0) * factor;
-	const cacheWrite = (cost.cacheWrite ?? 0) * factor;
-	cost.input = input;
-	cost.output = output;
-	cost.cacheRead = cacheRead;
-	cost.cacheWrite = cacheWrite;
-	cost.total = input + output + cacheRead + cacheWrite;
+function withUsage(msg: unknown): CostableUsage | undefined {
+	const usage = (msg as { usage?: unknown })?.usage as CostableUsage | undefined;
+	if (!usage || typeof usage.input !== "number" || !usage.cost) return undefined;
+	return usage;
 }
 
-function scaleEventUsage(event: AssistantMessageEvent, factor: number): void {
-	if (event.type === "done") scaleUsageCost(event.message, factor);
-	else if (event.type === "error") scaleUsageCost(event.error, factor);
+function scaleEventUsage(event: AssistantMessageEvent, model: Model<Api>, multiplier: number): void {
+	if (event.type === "done") {
+		const usage = withUsage(event.message);
+		if (usage) applyFastModePricing(model, usage, multiplier);
+	} else if (event.type === "error") {
+		const usage = withUsage(event.error);
+		if (usage) applyFastModePricing(model, usage, multiplier);
+	}
 }
 
 /**
- * Wrap the raw stream, forwarding every event unchanged but scaling usage cost
- * on the terminal done/error events while pi-ai's multiplier under-reports.
+ * Wrap the raw stream, forwarding every event unchanged but recomputing the
+ * fast-mode cost on the terminal done/error events.
  */
-export function correctUsageEvents(stream: AssistantMessageEventStream, factor: number): AssistantMessageEventStream {
-	if (factor === 1) return stream;
+export function withFastModePricing(
+	stream: AssistantMessageEventStream,
+	model: Model<Api>,
+	multiplier: number,
+): AssistantMessageEventStream {
+	if (multiplier === 1) return stream;
 	const out = createAssistantMessageEventStream();
 	void (async () => {
 		try {
 			for await (const event of stream) {
-				scaleEventUsage(event, factor);
+				scaleEventUsage(event, model, multiplier);
 				out.push(event);
 			}
 			out.end(await stream.result());
@@ -474,7 +487,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 				const serviceTier = resolveServiceTierForModel(model, state, SPECS, filter);
 				const stream = spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, serviceTier) as never);
 				if (!serviceTier) return stream;
-				return correctUsageEvents(stream, costCorrectionFactor(model.id, serviceTier));
+				return withFastModePricing(stream, model, fastModeMultiplier(model.id));
 			},
 		});
 	}

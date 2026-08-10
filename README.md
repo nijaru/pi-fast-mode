@@ -2,7 +2,7 @@
 
 Toggle OpenAI Codex fast mode (`service_tier: "priority"`) in [pi](https://github.com/earendil-works/pi) with correct footer cost accounting.
 
-Fast mode serves the same GPT-5.6 / GPT-5.5 / GPT-5.4 models at roughly 1.5x speed for a credit multiplier. This extension injects `service_tier: "priority"` into supported OpenAI Codex requests when enabled, and corrects pi's displayed cost for GPT-5.6 (pi's built-in multiplier applies 2x; OpenAI's rate card charges 2.5x, so this extension scales the footer cost by 1.25x for GPT-5.6).
+Fast mode serves the same GPT-5.6 / GPT-5.5 / GPT-5.4 models at roughly 1.5x speed for a credit multiplier. This extension injects `service_tier: "priority"` into supported OpenAI Codex requests when enabled, and prices the displayed footer cost independently of pi's internals: on each terminal turn it recomputes cost from raw tokens × model rates × the official rate-card multiplier (2.5x for GPT-5.6/5.5, 2x for GPT-5.4).
 
 ## Installation
 
@@ -63,8 +63,8 @@ Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Eac
 ## How it works
 
 - Registers an API-layer stream override (`pi-fast-mode:openai-codex-responses`) that adds `serviceTier` to request options on allowlisted models, then delegates to pi-ai's built-in `openai-codex-responses` stream.
-- pi-ai converts `options.serviceTier` into the `service_tier` request body field and applies its priority cost multiplier, so request and cost accounting stay consistent.
-- GPT-5.6 cost correction: pi-ai's built-in multiplier under-reports GPT-5.6 at 2x. This extension scales the displayed usage cost by 1.25x on terminal stream events for GPT-5.6 only, so the footer reflects the real 2.5x credit burn. Token counts are real and never modified.
+- pi-ai converts `options.serviceTier` into the `service_tier` request body field and applies its priority cost multiplier, so the request path is unchanged.
+- Fast-mode cost accounting: on terminal stream events the extension re-runs pi-ai's `calculateCost` (token counts × `model.cost`, tier-aware) and applies the official rate-card multiplier on top. This is independent of pi-ai's internal multiplier table, so it stays correct if pi-ai changes its internals. Token counts are real and never modified.
 
 ## Security
 
