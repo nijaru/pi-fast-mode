@@ -323,8 +323,8 @@ describe("withFastModePricing", () => {
 
 describe("statusText", () => {
 	const filter = buildModelFilter(SPECS, {});
-	test("shows FAST with model and multiplier when applied", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, filter)).toBe("FAST gpt-5.6-luna 2.5x");
+	test("shows a compact fast indicator when applied", () => {
+		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, filter)).toBe("⚡ FAST · 2.5×");
 	});
 	test("shows unsupported-model notice when active but not allowed", () => {
 		const f = buildModelFilter(SPECS, {});

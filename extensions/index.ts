@@ -404,7 +404,7 @@ export function statusText(
 	const tier = resolveServiceTierForModel(model, state, specs, filter);
 	if (tier && model) {
 		const mult = OFFICIAL_FAST_MULTIPLIER[model.id];
-		return mult !== undefined ? `FAST ${model.id} ${mult}x` : `FAST ${model.id}`;
+		return mult !== undefined ? `⚡ FAST · ${mult}×` : "⚡ FAST";
 	}
 	if (state.active && model) {
 		if (isModelAllowed(model, specs, filter)) {

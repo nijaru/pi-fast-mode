@@ -27,7 +27,7 @@ Start with fast mode enabled:
 pi --fast
 ```
 
-When enabled and the active model is supported, a footer status shows `FAST <model> 2.5x`. Requests only change for the allowlisted OpenAI Codex models; all other models and providers are untouched.
+When enabled and the active model is supported, a compact footer status shows `⚡ FAST · 2.5×`; the active model is already shown elsewhere in the footer. Requests only change for the allowlisted OpenAI Codex models; all other models and providers are untouched.
 
 ## Supported models
 
