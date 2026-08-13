@@ -49,7 +49,8 @@ export type ServiceTier = (typeof SERVICE_TIERS)[number];
 
 export const CONFIG_BASENAME = "pi-fast-mode.json";
 export const REGISTRATION_PREFIX = "pi-fast-mode";
-export const STATUS_KEY = "pi-fast-mode";
+// Footer statuses are rendered alphabetically by key; keep fast mode ahead of MCP.
+export const STATUS_KEY = "fast-mode";
 export const COMMAND_FAST = "fast";
 export const FLAG_FAST = "fast";
 
