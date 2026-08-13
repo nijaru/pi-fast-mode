@@ -48,7 +48,8 @@ export const SERVICE_TIERS = ["priority", "flex", "default", "auto", "scale"] as
 export type ServiceTier = (typeof SERVICE_TIERS)[number];
 
 export const CONFIG_BASENAME = "pi-fast-mode.json";
-export const REGISTRATION_PREFIX = "pi-fast-mode";
+/** Existing provider whose Codex models should receive the API-layer override. */
+export const CODEX_PROVIDER = "openai-codex";
 // Footer statuses are rendered alphabetically by key; keep fast mode ahead of MCP.
 export const STATUS_KEY = "fast-mode";
 export const COMMAND_FAST = "fast";
@@ -478,7 +479,8 @@ export default function piFastMode(pi: ExtensionAPI): void {
 	});
 
 	for (const spec of SPECS) {
-		pi.registerProvider(`${REGISTRATION_PREFIX}:${spec.api}`, {
+		// Overlay the built-in provider to preserve its models and authentication.
+		pi.registerProvider(CODEX_PROVIDER, {
 			api: spec.api,
 			streamSimple(model, context, options) {
 				const filter = buildModelFilter(SPECS, config);

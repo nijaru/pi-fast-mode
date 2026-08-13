@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import {
+import piFastMode, {
 	buildModelFilter,
 	applyFastModePricing,
 	fastModeMultiplier,
+	CODEX_PROVIDER,
 	CONFIG_BASENAME,
 	DEFAULT_FAST_MODE_MODELS,
 	isModelAllowed,
@@ -318,6 +319,29 @@ describe("withFastModePricing", () => {
 	test("returns the stream untouched when multiplier is 1", () => {
 		const raw = createAssistantMessageEventStream();
 		expect(withFastModePricing(raw, model as never, 1)).toBe(raw);
+	});
+});
+
+describe("extension registration", () => {
+	test("overlays the existing Codex provider instead of registering a new provider", () => {
+		const registrations: Array<{ name: string; config: { api?: string } }> = [];
+		const pi = {
+			registerFlag() {},
+			registerProvider(name: string, config: { api?: string }) {
+				registrations.push({ name, config });
+			},
+			registerCommand() {},
+			on() {},
+			getFlag() {
+				return false;
+			},
+		};
+
+		piFastMode(pi as never);
+
+		expect(registrations).toHaveLength(1);
+		expect(registrations[0]?.name).toBe(CODEX_PROVIDER);
+		expect(registrations[0]?.config.api).toBe("openai-codex-responses");
 	});
 });
 

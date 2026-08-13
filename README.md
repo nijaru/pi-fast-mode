@@ -58,11 +58,11 @@ Config resolves project-over-global, is created on first use, and persists `acti
 
 ## Adding another provider/API
 
-Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Each spec declares the API name, the tiers that API accepts, a default model allowlist, and the raw pi-ai stream call. Commands, config, pricing, and the footer status are spec-driven, so adding an API is one spec plus one `registerProvider` loop iteration — no structural refactor.
+Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Each spec declares the API name, the tiers that API accepts, a default model allowlist, and the raw pi-ai stream call. Commands, config, pricing, and the footer status are spec-driven, so adding an API is one spec plus one provider-overlay registration — no structural refactor.
 
 ## How it works
 
-- Registers an API-layer stream override (`pi-fast-mode:openai-codex-responses`) that adds `serviceTier` to request options on allowlisted models, then delegates to pi-ai's built-in `openai-codex-responses` stream.
+- Overlays the existing `openai-codex` provider with an API-layer stream handler that adds `serviceTier` to request options on allowlisted models, preserving Pi's built-in Codex models and authentication.
 - pi-ai converts `options.serviceTier` into the `service_tier` request body field and applies its priority cost multiplier, so the request path is unchanged.
 - Fast-mode cost accounting: on terminal stream events the extension re-runs pi-ai's `calculateCost` (token counts × `model.cost`, tier-aware) and applies the official rate-card multiplier on top. This is independent of pi-ai's internal multiplier table, so it stays correct if pi-ai changes its internals. Token counts are real and never modified.
 
