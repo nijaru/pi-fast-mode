@@ -326,18 +326,14 @@ describe("statusText", () => {
 	test("shows a compact fast indicator when applied", () => {
 		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, filter)).toBe("⚡ FAST · 2.5×");
 	});
-	test("shows unsupported-model notice when active but not allowed", () => {
+	test("stays empty when active but model is not allowed", () => {
 		const f = buildModelFilter(SPECS, {});
-		expect(statusText(codexModel("deepseek-v4-flash"), stateOn, SPECS, f)).toBe(
-			"fast mode: unsupported model (openai-codex/deepseek-v4-flash)",
-		);
+		expect(statusText(codexModel("deepseek-v4-flash"), stateOn, SPECS, f)).toBe("");
 	});
 	test("empty when off", () => {
 		expect(statusText(codexModel("gpt-5.6-luna"), stateOff, SPECS, filter)).toBe("");
 	});
-	test("tier-unsupported message when model is allowed but api rejects the configured tier", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), { active: true, serviceTier: "flex" }, SPECS, filter)).toBe(
-			"fast mode: flex tier unsupported on openai-codex-responses",
-		);
+	test("stays empty when the configured tier is unsupported", () => {
+		expect(statusText(codexModel("gpt-5.6-luna"), { active: true, serviceTier: "flex" }, SPECS, filter)).toBe("");
 	});
 });

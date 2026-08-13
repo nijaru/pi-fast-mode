@@ -407,12 +407,9 @@ export function statusText(
 		const mult = OFFICIAL_FAST_MULTIPLIER[model.id];
 		return mult !== undefined ? `⚡ FAST · ${mult}×` : "⚡ FAST";
 	}
-	if (state.active && model) {
-		if (isModelAllowed(model, specs, filter)) {
-			return `fast mode: ${state.serviceTier} tier unsupported on ${model.api}`;
-		}
-		return `fast mode: unsupported model (${model.provider}/${model.id})`;
-	}
+	// Keep the footer quiet for inactive or non-tierable models. The active model
+	// and provider already identify the current context, while /fast status can
+	// still explain why fast mode did not apply when explicitly requested.
 	return "";
 }
 
