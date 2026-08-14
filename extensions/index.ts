@@ -47,6 +47,15 @@ import { dirname, join } from "node:path";
 export const SERVICE_TIERS = ["priority", "flex", "default", "auto", "scale"] as const;
 export type ServiceTier = (typeof SERVICE_TIERS)[number];
 
+/** Options accepted by pi-ai's Codex Responses implementation. */
+export type CodexStreamOptions = SimpleStreamOptions & {
+	serviceTier?: ServiceTier;
+	reasoningEffort?: ModelThinkingLevel | "none";
+	textVerbosity?: "low" | "medium" | "high";
+	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on" | null;
+	toolChoice?: "auto" | "none" | "required";
+};
+
 export const CONFIG_BASENAME = "pi-fast-mode.json";
 /** Existing provider whose Codex models should receive the API-layer override. */
 export const CODEX_PROVIDER = "openai-codex";
@@ -87,7 +96,7 @@ export interface ApiTierSpec {
 	streamRaw: (
 		model: Model<Api>,
 		context: Context,
-		options: SimpleStreamOptions & { serviceTier?: ServiceTier; reasoningEffort?: ModelThinkingLevel | "none" },
+		options: CodexStreamOptions,
 	) => AssistantMessageEventStream;
 }
 
@@ -96,7 +105,7 @@ export const CODEX_RESPONSES_SPEC: ApiTierSpec = {
 	supportedTiers: ["priority"],
 	defaultModels: [...DEFAULT_FAST_MODE_MODELS],
 	streamRaw: (model, context, options) =>
-		openAICodexResponsesApi().streamSimple(model as Model<"openai-codex-responses">, context, options),
+		openAICodexResponsesApi().stream(model as Model<"openai-codex-responses">, context, options),
 };
 
 export const SPECS: readonly ApiTierSpec[] = [CODEX_RESPONSES_SPEC];
@@ -135,10 +144,7 @@ export interface ModelFilter {
 	blocklist: readonly SupportedModel[];
 }
 
-type OpenAIServiceTierOptions = SimpleStreamOptions & {
-	serviceTier?: ServiceTier;
-	reasoningEffort?: ModelThinkingLevel | "none";
-};
+type OpenAIServiceTierOptions = CodexStreamOptions;
 
 const DEFAULT_CONFIG: Required<Pick<ConfigFile, "persistState" | "active" | "serviceTier" | "allowlist" | "blocklist">> = {
 	persistState: true,
@@ -485,7 +491,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 			streamSimple(model, context, options) {
 				const filter = buildModelFilter(SPECS, config);
 				const serviceTier = resolveServiceTierForModel(model, state, SPECS, filter);
-				const stream = spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, serviceTier) as never);
+				const stream = spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, serviceTier));
 				if (!serviceTier) return stream;
 				return withFastModePricing(stream, model, fastModeMultiplier(model.id));
 			},

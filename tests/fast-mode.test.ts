@@ -67,7 +67,7 @@ describe("config", () => {
 	test("defaults resolve with empty overrides", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-"));
 		try {
-			const config = resolveConfig(dir);
+			const config = resolveConfig(dir, join(dir, "home"));
 			expect(config.active).toBe(false);
 			expect(config.serviceTier).toBe("priority");
 			expect(config.allowlist).toEqual([]);
@@ -220,7 +220,7 @@ describe("config robustness", () => {
 				expect(read).toBeUndefined();
 			});
 			expect(warned.length).toBeGreaterThan(0);
-			const config = resolveConfig(dir);
+			const config = resolveConfig(dir, join(dir, "home"));
 			expect(config.active).toBe(false);
 			expect(config.allowlist).toEqual([]);
 			expect(config.blocklist).toEqual([]);
@@ -342,6 +342,78 @@ describe("extension registration", () => {
 		expect(registrations).toHaveLength(1);
 		expect(registrations[0]?.name).toBe(CODEX_PROVIDER);
 		expect(registrations[0]?.config.api).toBe("openai-codex-responses");
+	});
+
+	test("sends priority service_tier through the overlaid Codex provider", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-live-"));
+		let body: Record<string, unknown> | undefined;
+		const server = Bun.serve({
+			port: 0,
+			fetch: () => new Response(JSON.stringify({ error: { message: "captured" } }), {
+				status: 400,
+				headers: { "content-type": "application/json" },
+			}),
+		});
+		try {
+			const registrations: Array<{ config: { streamSimple: Function } }> = [];
+			const events: Record<string, Function> = {};
+			const pi = {
+				registerFlag() {},
+				registerProvider(_name: string, config: { streamSimple: Function }) {
+					registrations.push({ config });
+				},
+				registerCommand() {},
+				on(name: string, handler: Function) {
+					events[name] = handler;
+				},
+				getFlag() {
+					return true;
+				},
+			};
+			piFastMode(pi as never);
+
+			const model = {
+				id: "gpt-5.6-luna",
+				provider: "openai-codex",
+				api: "openai-codex-responses" as const,
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				maxTokens: 32_000,
+				contextWindow: 272_000,
+				reasoning: true,
+				thinkingLevelMap: { minimal: "low" },
+				input: ["text" as const],
+				cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+			};
+			const ctx = {
+				cwd: dir,
+				model,
+				systemPrompt: "test",
+				messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+				tools: [],
+				ui: { setStatus() {}, notify() {} },
+			};
+			await events.session_start?.({}, ctx);
+
+			const payloadToken = Buffer.from(JSON.stringify({
+				"https://api.openai.com/auth": { chatgpt_account_id: "test-account" },
+			})).toString("base64url");
+			const stream = registrations[0]!.config.streamSimple(model, ctx, {
+				apiKey: `e30.${payloadToken}.sig`,
+				transport: "sse",
+				reasoning: "minimal",
+				onPayload(payload: Record<string, unknown>) {
+					body = payload;
+					return payload;
+				},
+			});
+			for await (const _event of stream) {}
+
+			expect(body?.model).toBe("gpt-5.6-luna");
+			expect(body?.service_tier).toBe("priority");
+		} finally {
+			server.stop();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 
