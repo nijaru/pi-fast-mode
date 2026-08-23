@@ -63,7 +63,6 @@ export const CODEX_PROVIDER = "openai-codex";
 // Footer statuses are rendered alphabetically by key; keep fast mode ahead of MCP.
 export const STATUS_KEY = "fast-mode";
 export const COMMAND_FAST = "fast";
-export const FLAG_FAST = "fast";
 
 /** Official Codex fast-mode credit multipliers per model (OpenAI Codex rate card). */
 export const OFFICIAL_FAST_MULTIPLIER: Record<string, number> = {
@@ -484,12 +483,6 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		notifyStatus(ctx);
 	}
 
-	pi.registerFlag(FLAG_FAST, {
-		description: "Start with OpenAI Codex fast mode (priority service tier) enabled",
-		type: "boolean",
-		default: false,
-	});
-
 	for (const spec of SPECS) {
 		// Overlay the built-in provider to preserve its models and authentication.
 		pi.registerProvider(CODEX_PROVIDER, {
@@ -527,12 +520,6 @@ export default function piFastMode(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		refreshConfig(ctx);
-		if (pi.getFlag(FLAG_FAST) === true) {
-			state.active = true;
-			state.serviceTier = "priority";
-			runtimeOverride = { ...state };
-			persistState(config);
-		}
 		updateStatus(ctx);
 		if (state.active) notifyStatus(ctx);
 	});

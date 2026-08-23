@@ -21,12 +21,6 @@ Restart pi. Requires pi / `@earendil-works/pi-ai` >= 0.84.2.
 /fast status   show current state and the active model
 ```
 
-Start with fast mode enabled:
-
-```bash
-pi --fast
-```
-
 When enabled and the active model is supported, a compact footer status shows `⚡ FAST · $ 2.5×`; the active model is already shown elsewhere in the footer. Fast mode itself runs at roughly 1.5x speed. Requests only change for the allowlisted OpenAI Codex models; all other models and providers are untouched.
 
 ## Supported models

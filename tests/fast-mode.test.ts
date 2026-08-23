@@ -352,7 +352,7 @@ describe("extension registration", () => {
 		expect(registrations[0]?.config.api).toBe("openai-codex-responses");
 	});
 
-	test("keeps --fast enabled for a session-only config across /fast status", async () => {
+	test("keeps /fast on enabled for a session-only config across /fast status", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-state-"));
 		try {
 			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
@@ -364,16 +364,12 @@ describe("extension registration", () => {
 			const statuses: Array<string | undefined> = [];
 			const notices: string[] = [];
 			const pi = {
-				registerFlag() {},
 				registerProvider() {},
 				registerCommand(name: string, command: { handler: Function }) {
 					commands[name] = command;
 				},
 				on(name: string, handler: Function) {
 					events[name] = handler;
-				},
-				getFlag() {
-					return true;
 				},
 			};
 			piFastMode(pi as never);
@@ -391,9 +387,10 @@ describe("extension registration", () => {
 				},
 			};
 			await events.session_start?.({}, ctx);
+			await commands.fast?.handler("on", ctx);
 			await commands.fast?.handler("status", ctx);
 
-			expect(statuses).toEqual(["⚡ FAST · $ 2.5×", "⚡ FAST · $ 2.5×"]);
+			expect(statuses).toEqual([undefined, "⚡ FAST · $ 2.5×", "⚡ FAST · $ 2.5×"]);
 			expect(notices.at(-1)).toContain("Fast mode: priority service tier");
 			expect(readConfig(configPath)?.active).toBe(false);
 		} finally {
