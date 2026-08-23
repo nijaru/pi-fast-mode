@@ -420,7 +420,7 @@ describe("extension registration", () => {
 describe("statusText", () => {
 	const filter = buildModelFilter(SPECS, {});
 	test("shows a compact fast indicator when applied", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, filter)).toBe("⚡ FAST · 2.5×");
+		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, filter)).toBe("⚡ FAST · $ 2.5×");
 	});
 	test("stays empty when active but model is not allowed", () => {
 		const f = buildModelFilter(SPECS, {});

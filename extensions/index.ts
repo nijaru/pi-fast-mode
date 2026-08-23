@@ -412,7 +412,7 @@ export function statusText(
 	const tier = resolveServiceTierForModel(model, state, specs, filter);
 	if (tier && model) {
 		const mult = OFFICIAL_FAST_MULTIPLIER[model.id];
-		return mult !== undefined ? `⚡ FAST · ${mult}×` : "⚡ FAST";
+		return mult !== undefined ? `⚡ FAST · $ ${mult}×` : "⚡ FAST";
 	}
 	// Keep the footer quiet for inactive or non-tierable models. The active model
 	// and provider already identify the current context, while /fast status can

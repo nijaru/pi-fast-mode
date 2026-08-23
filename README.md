@@ -2,7 +2,7 @@
 
 Toggle OpenAI Codex fast mode (`service_tier: "priority"`) in [pi](https://github.com/earendil-works/pi) with correct footer cost accounting.
 
-Fast mode serves the same GPT-5.6 / GPT-5.5 / GPT-5.4 models at roughly 1.5x speed for a credit multiplier. This extension injects `service_tier: "priority"` into supported OpenAI Codex requests when enabled, and prices the displayed footer cost independently of pi's internals: on each terminal turn it recomputes cost from raw tokens × model rates × the official rate-card multiplier (2.5x for GPT-5.6/5.5, 2x for GPT-5.4).
+Fast mode runs supported GPT-5.6 / GPT-5.5 / GPT-5.4 models at roughly 1.5x speed, while charging a higher credit rate: 2.5x for GPT-5.6/5.5 and 2x for GPT-5.4. This extension injects `service_tier: "priority"` into supported OpenAI Codex requests when enabled, and prices the displayed footer cost independently of pi's internals: on each terminal turn it recomputes cost from raw tokens × model rates × the official rate-card multiplier.
 
 ## Installation
 
@@ -27,7 +27,7 @@ Start with fast mode enabled:
 pi --fast
 ```
 
-When enabled and the active model is supported, a compact footer status shows `⚡ FAST · 2.5×`; the active model is already shown elsewhere in the footer. Requests only change for the allowlisted OpenAI Codex models; all other models and providers are untouched.
+When enabled and the active model is supported, a compact footer status shows `⚡ FAST · $ 2.5×`; the active model is already shown elsewhere in the footer. Fast mode itself runs at roughly 1.5x speed. Requests only change for the allowlisted OpenAI Codex models; all other models and providers are untouched.
 
 ## Supported models
 
