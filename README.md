@@ -10,7 +10,7 @@ Fast mode runs supported GPT-5.6 / GPT-5.5 / GPT-5.4 models at roughly 1.5x spee
 pi install git:github.com/nijaru/pi-fast-mode
 ```
 
-Restart pi. Requires pi / `@earendil-works/pi-ai` >= 0.84.
+Restart pi. Requires pi / `@earendil-works/pi-ai` >= 0.84.2.
 
 ## Usage
 
@@ -64,7 +64,7 @@ Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Eac
 
 - Overlays the existing `openai-codex` provider with an API-layer stream handler that adds `serviceTier` to request options on allowlisted models, preserving Pi's built-in Codex models and authentication.
 - pi-ai converts `options.serviceTier` into the `service_tier` request body field and applies its priority cost multiplier, so the request path is unchanged.
-- Fast-mode cost accounting: on terminal stream events the extension re-runs pi-ai's `calculateCost` (token counts × `model.cost`, tier-aware) and applies the official rate-card multiplier on top. This is independent of pi-ai's internal multiplier table, so it stays correct if pi-ai changes its internals. Token counts are real and never modified.
+- Fast-mode cost accounting: on terminal stream events the extension re-runs pi-ai's `calculateCost` (token counts × `model.cost`, tier-aware), excludes Codex cache writes, and applies the official rate-card multiplier on top. This is independent of pi-ai's internal multiplier table, so it stays correct if pi-ai changes its internals. Token counts are real and never modified.
 
 ## Security
 

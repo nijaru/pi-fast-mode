@@ -169,6 +169,14 @@ describe("fast-mode pricing", () => {
 		cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, tiers: [] },
 	} as const;
 
+	test("does not charge Codex cache writes", () => {
+		const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 100_000, cost: {} };
+		applyFastModePricing(luna as never, usage as never, 2.5);
+		const cost = usage.cost as { cacheWrite: number; total: number };
+		expect(cost.cacheWrite).toBe(0);
+		expect(cost.total).toBe(0);
+	});
+
 	test("recomputes cost from token counts × rates × official multiplier", () => {
 		const usage = { input: 1_000_000, output: 500_000, cacheRead: 0, cacheWrite: 0, cost: {} };
 		// base: 1e6×$0.2/1e6 + 0.5e6×$1.2/1e6 = 0.2 + 0.6 = 0.8; ×2.5 = 2.0
@@ -342,6 +350,55 @@ describe("extension registration", () => {
 		expect(registrations).toHaveLength(1);
 		expect(registrations[0]?.name).toBe(CODEX_PROVIDER);
 		expect(registrations[0]?.config.api).toBe("openai-codex-responses");
+	});
+
+	test("keeps --fast enabled for a session-only config across /fast status", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-state-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeConfig(configPath, { active: false, persistState: false, serviceTier: "priority" });
+
+			const events: Record<string, Function> = {};
+			const commands: Record<string, { handler: Function }> = {};
+			const statuses: Array<string | undefined> = [];
+			const notices: string[] = [];
+			const pi = {
+				registerFlag() {},
+				registerProvider() {},
+				registerCommand(name: string, command: { handler: Function }) {
+					commands[name] = command;
+				},
+				on(name: string, handler: Function) {
+					events[name] = handler;
+				},
+				getFlag() {
+					return true;
+				},
+			};
+			piFastMode(pi as never);
+
+			const ctx = {
+				cwd: dir,
+				model: codexModel("gpt-5.6-luna"),
+				ui: {
+					setStatus(_key: string, value: string | undefined) {
+						statuses.push(value);
+					},
+					notify(message: string) {
+						notices.push(message);
+					},
+				},
+			};
+			await events.session_start?.({}, ctx);
+			await commands.fast?.handler("status", ctx);
+
+			expect(statuses).toEqual(["⚡ FAST · $ 2.5×", "⚡ FAST · $ 2.5×"]);
+			expect(notices.at(-1)).toContain("Fast mode: priority service tier");
+			expect(readConfig(configPath)?.active).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test("sends priority service_tier through the overlaid Codex provider", async () => {

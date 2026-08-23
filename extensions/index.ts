@@ -22,9 +22,10 @@
  *
  * Cost accounting: the displayed cost is recomputed from raw token counts ×
  * model.cost × the official rate-card multiplier (2.5x for GPT-5.6/5.5, 2x for
- * GPT-5.4) on terminal stream events. This is independent of pi-ai's internal
- * service-tier multiplier table, so it stays correct if pi-ai changes its
- * internals. Token counts are real and never modified.
+ * GPT-5.4) on terminal stream events. Codex cache writes are excluded because
+ * the Codex rate card does not charge for them. This is independent of pi-ai's
+ * internal service-tier multiplier table, so it stays correct if pi-ai changes
+ * its internals. Token counts are real and never modified.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -328,6 +329,9 @@ interface CostableUsage {
  */
 export function applyFastModePricing(model: Model<Api>, usage: CostableUsage, multiplier: number): void {
 	calculateCost(model as never, usage as never);
+	// Codex does not charge for cache writes, even when the shared model metadata
+	// contains an API cache-write rate.
+	usage.cost.cacheWrite = 0;
 	usage.cost.input = (usage.cost.input ?? 0) * multiplier;
 	usage.cost.output = (usage.cost.output ?? 0) * multiplier;
 	usage.cost.cacheRead = (usage.cost.cacheRead ?? 0) * multiplier;
@@ -423,10 +427,11 @@ export function statusText(
 export default function piFastMode(pi: ExtensionAPI): void {
 	let config: ResolvedConfig = defaultResolvedConfig(process.cwd());
 	let state: RuntimeState = { active: config.active, serviceTier: config.serviceTier };
+	let runtimeOverride: RuntimeState | undefined;
 
 	function refreshConfig(ctx: ExtensionContext): ResolvedConfig {
 		config = resolveConfig(getConfigCwd(ctx));
-		state = { active: config.active, serviceTier: config.serviceTier };
+		state = runtimeOverride ?? { active: config.active, serviceTier: config.serviceTier };
 		return config;
 	}
 
@@ -473,6 +478,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 	function setActive(ctx: ExtensionContext, active: boolean): void {
 		refreshConfig(ctx);
 		state.active = active;
+		runtimeOverride = { ...state };
 		persistState(config);
 		updateStatus(ctx);
 		notifyStatus(ctx);
@@ -524,6 +530,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		if (pi.getFlag(FLAG_FAST) === true) {
 			state.active = true;
 			state.serviceTier = "priority";
+			runtimeOverride = { ...state };
 			persistState(config);
 		}
 		updateStatus(ctx);
