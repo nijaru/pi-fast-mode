@@ -410,13 +410,16 @@ describe("extension registration", () => {
 		});
 		try {
 			const registrations: Array<{ config: { streamSimple: Function } }> = [];
+			const commands: Record<string, { handler: Function }> = {};
 			const events: Record<string, Function> = {};
 			const pi = {
 				registerFlag() {},
 				registerProvider(_name: string, config: { streamSimple: Function }) {
 					registrations.push({ config });
 				},
-				registerCommand() {},
+				registerCommand(name: string, command: { handler: Function }) {
+					commands[name] = command;
+				},
 				on(name: string, handler: Function) {
 					events[name] = handler;
 				},
@@ -447,6 +450,7 @@ describe("extension registration", () => {
 				ui: { setStatus() {}, notify() {} },
 			};
 			await events.session_start?.({}, ctx);
+			await commands.fast?.handler("on", ctx);
 
 			const payloadToken = Buffer.from(JSON.stringify({
 				"https://api.openai.com/auth": { chatgpt_account_id: "test-account" },
