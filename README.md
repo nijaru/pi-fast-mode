@@ -65,7 +65,7 @@ Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Eac
 
 ## Security
 
-Pi extensions run with your local user permissions. This extension reads/writes its config JSON files and persists session state through Pi's session API, while delegating LLM calls to pi's built-in OpenAI Codex provider; it makes no independent network requests.
+Pi extensions run with your local user permissions. This extension reads its config JSON files and persists session state through Pi's session API, while delegating LLM calls to pi's built-in OpenAI Codex provider; it makes no independent network requests.
 
 ## License
 
