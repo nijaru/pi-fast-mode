@@ -459,7 +459,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 
 	function restoreSessionState(ctx: ExtensionContext, reason: string | undefined): void {
 		const entries = ctx.sessionManager.getEntries();
-		const saved = readSessionState(ctx.sessionManager.getBranch());
+		const saved = config.persistState ? readSessionState(ctx.sessionManager.getBranch()) : undefined;
 		if (saved) {
 			state = saved;
 			return;
@@ -556,7 +556,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 
 	pi.on("session_tree", async (_event, ctx) => {
 		refreshConfig(ctx);
-		const saved = readSessionState(ctx.sessionManager.getBranch());
+		const saved = config.persistState ? readSessionState(ctx.sessionManager.getBranch()) : undefined;
 		if (saved) {
 			state = saved;
 		} else if (config.persistState) {

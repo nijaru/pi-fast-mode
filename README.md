@@ -40,7 +40,7 @@ Config resolves project-over-global and provides defaults for new sessions:
 - global: `~/.pi/agent/extensions/pi-fast-mode.json`
 - project: `.pi/extensions/pi-fast-mode.json`
 
-Fast-mode state is recorded in each session's history, like model changes. Resuming a session restores its own state; changing the global default does not retroactively enable fast mode in an existing session. Sessions created before this state was recorded default to off and are given an explicit off state when opened. `/fast` changes the current session only; edit `active` in the config to change the default for new sessions. With `persistState: false`, `/fast` changes remain runtime-only.
+Fast-mode state is recorded in each session's history, like model changes. Resuming a session restores its own state; changing the global default does not retroactively enable fast mode in an existing session. Sessions created before this state was recorded default to off and are given an explicit off state when opened. `/fast` changes the current session only; edit `active` in the config to change the default for new sessions. With `persistState: false`, saved session state is ignored and `/fast` changes remain runtime-only.
 
 ```json
 {
@@ -65,7 +65,7 @@ Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Eac
 
 ## Security
 
-Pi extensions run with your local user permissions. This extension only reads/writes its config JSON files and delegates LLM calls to pi's built-in OpenAI Codex provider; it makes no independent network requests.
+Pi extensions run with your local user permissions. This extension reads/writes its config JSON files and persists session state through Pi's session API, while delegating LLM calls to pi's built-in OpenAI Codex provider; it makes no independent network requests.
 
 ## License
 

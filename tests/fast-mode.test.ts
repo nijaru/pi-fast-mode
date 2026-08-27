@@ -381,6 +381,9 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: false, persistState: false, serviceTier: "priority" });
 
+			const entries: unknown[] = [
+				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
+			];
 			const events: Record<string, Function> = {};
 			const commands: Record<string, { handler: Function }> = {};
 			const statuses: Array<string | undefined> = [];
@@ -409,8 +412,8 @@ describe("extension registration", () => {
 					},
 				},
 				sessionManager: {
-					getEntries: () => [],
-					getBranch: () => [],
+					getEntries: () => entries,
+					getBranch: () => entries,
 				},
 			};
 			await events.session_start?.({}, ctx);
