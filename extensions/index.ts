@@ -460,6 +460,15 @@ export default function piFastMode(pi: ExtensionAPI): void {
 	function restoreSessionState(ctx: ExtensionContext, reason: string | undefined): void {
 		const entries = ctx.sessionManager.getEntries();
 		const saved = config.persistState ? readSessionState(ctx.sessionManager.getBranch()) : undefined;
+		const contextEntries = ctx.sessionManager.buildContextEntries?.() ?? entries;
+		const hasConversation = contextEntries.some(
+			(entry) =>
+				isRecord(entry) &&
+				(entry.type === "message" ||
+					entry.type === "custom_message" ||
+					entry.type === "compaction" ||
+					entry.type === "branch_summary"),
+		);
 		if (saved) {
 			state = saved;
 			return;
@@ -469,7 +478,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		// session created before this extension recorded state stays off rather
 		// than being changed retroactively by the global config.
 		state = {
-			active: reason === "new" || entries.length === 0 ? config.active : false,
+			active: reason === "new" || !hasConversation ? config.active : false,
 			serviceTier: config.serviceTier,
 		};
 		appendSessionState();

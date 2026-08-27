@@ -478,7 +478,10 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: true, persistState: true, serviceTier: "priority" });
 
-			const entries: unknown[] = [];
+			const entries: unknown[] = [
+				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
+				{ type: "thinking_level_change", thinkingLevel: "off" },
+			];
 			const statuses: Array<string | undefined> = [];
 			const events: Record<string, Function> = {};
 			const pi = {
@@ -505,12 +508,15 @@ describe("extension registration", () => {
 				sessionManager: {
 					getEntries: () => entries,
 					getBranch: () => entries,
+					buildContextEntries: () => entries,
 				},
 			};
-			await events.session_start?.({ reason: "new" }, ctx);
+			await events.session_start?.({ reason: "startup" }, ctx);
 
 			expect(statuses).toEqual(["⚡ FAST · $ 2.5×"]);
 			expect(entries).toEqual([
+				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
+				{ type: "thinking_level_change", thinkingLevel: "off" },
 				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
 			]);
 		} finally {
