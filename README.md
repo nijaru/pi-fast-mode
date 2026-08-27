@@ -15,10 +15,12 @@ Restart pi. Requires pi / `@earendil-works/pi-ai` >= 0.84.2.
 ## Usage
 
 ```text
-/fast          toggle fast mode on/off
-/fast on       enable
-/fast off      disable
-/fast status   show current state and the active model
+/fast                  toggle fast mode for this session
+/fast on               enable for this session
+/fast off              disable for this session
+/fast status           show current state and the active model
+/fast default on|off   set the default for new sessions
+/fast default status   show the default and its config path
 ```
 
 When enabled and the active model is supported, a compact footer status shows `⚡ FAST · $ 2.5×`; the active model is already shown elsewhere in the footer. Fast mode itself runs at roughly 1.5x speed. Requests only change for the allowlisted OpenAI Codex models; all other models and providers are untouched.
@@ -40,7 +42,7 @@ Config resolves project-over-global and provides defaults for new sessions:
 - global: `~/.pi/agent/extensions/pi-fast-mode.json`
 - project: `.pi/extensions/pi-fast-mode.json`
 
-Fast-mode state is recorded in each session's history, like model changes. Resuming a session restores its own state; changing the global default does not retroactively enable fast mode in an existing session. Sessions created before this state was recorded default to off and are given an explicit off state when opened. `/fast` changes the current session only; edit `active` in the config to change the default for new sessions. With `persistState: false`, saved session state is ignored and `/fast` changes remain runtime-only.
+Fast-mode state is recorded in each session's history, like model changes. Resuming a session restores its own state; changing the global default does not retroactively enable fast mode in an existing session. Sessions created before this state was recorded default to off and are given an explicit off state when opened. `/fast` changes the current session only. Use `/fast default on|off` to update the effective project/global default for new sessions; the command writes to the project config when present, otherwise the global config. With `persistState: false`, saved session state is ignored and `/fast` changes remain runtime-only.
 
 ```json
 {
@@ -65,7 +67,7 @@ Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Eac
 
 ## Security
 
-Pi extensions run with your local user permissions. This extension reads its config JSON files and persists session state through Pi's session API, while delegating LLM calls to pi's built-in OpenAI Codex provider; it makes no independent network requests.
+Pi extensions run with your local user permissions. This extension reads and writes its config JSON files, persists session state through Pi's session API, and delegates LLM calls to pi's built-in OpenAI Codex provider; it makes no independent network requests.
 
 ## License
 

@@ -571,6 +571,56 @@ describe("extension registration", () => {
 		}
 	});
 
+	test("toggles the new-session default without changing the current session", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-default-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeConfig(configPath, { active: false, persistState: false, serviceTier: "priority" });
+
+			const entries: unknown[] = [];
+			const commands: Record<string, { handler: Function }> = {};
+			const events: Record<string, Function> = {};
+			const notices: string[] = [];
+			const pi = {
+				registerProvider() {},
+				appendEntry() {},
+				registerCommand(name: string, command: { handler: Function }) {
+					commands[name] = command;
+				},
+				on(name: string, handler: Function) {
+					events[name] = handler;
+				},
+			};
+			piFastMode(pi as never);
+
+			const ctx = {
+				cwd: dir,
+				model: codexModel("gpt-5.6-luna"),
+				ui: {
+					setStatus() {},
+					notify(message: string) {
+						notices.push(message);
+					},
+				},
+				sessionManager: {
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+			};
+			await events.session_start?.({ reason: "new" }, ctx);
+			await commands.fast?.handler("default on", ctx);
+
+			expect(readConfig(configPath)?.active).toBe(true);
+			expect(notices.at(-1)).toContain("default: on");
+			expect(notices.at(-1)).toContain("for new sessions");
+			await commands.fast?.handler("status", ctx);
+			expect(notices.at(-1)).toContain("Fast mode is off");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("restores a persisted state instead of using the global default", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-session-"));
 		try {

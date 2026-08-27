@@ -521,6 +521,24 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		notifyStatus(ctx);
 	}
 
+	function setDefault(ctx: ExtensionContext, active: boolean): void {
+		refreshConfig(ctx);
+		writeConfig(config.configPath, { ...readConfig(config.configPath), active });
+		refreshConfig(ctx);
+		ctx.ui.notify(
+			`Fast mode default: ${config.active ? "on" : "off"} for new sessions (${config.configPath}).`,
+			"info",
+		);
+	}
+
+	function notifyDefault(ctx: ExtensionContext): void {
+		refreshConfig(ctx);
+		ctx.ui.notify(
+			`Fast mode default is ${config.active ? "on" : "off"} for new sessions (${config.configPath}).`,
+			"info",
+		);
+	}
+
 	for (const spec of SPECS) {
 		// Overlay the built-in provider to preserve its models and authentication.
 		pi.registerProvider(CODEX_PROVIDER, {
@@ -536,14 +554,37 @@ export default function piFastMode(pi: ExtensionAPI): void {
 	}
 
 	pi.registerCommand(COMMAND_FAST, {
-		description: "Toggle OpenAI Codex fast mode (priority service tier); /fast [on|off|status]",
+		description: "Toggle OpenAI Codex fast mode; /fast [on|off|status|default]",
 		getArgumentCompletions: (prefix) => {
-			const values = ["on", "off", "status"];
-			const items = values.filter((value) => value.startsWith(prefix.trim().toLowerCase()));
+			const normalized = prefix.trimStart().toLowerCase();
+			if (normalized.startsWith("default ")) {
+				const subprefix = normalized.slice("default ".length).trim();
+				const values = ["on", "off", "status"];
+				const items = values.filter((value) => value.startsWith(subprefix));
+				return items.length ? items.map((value) => ({ value, label: value })) : null;
+			}
+			const values = ["on", "off", "status", "default"];
+			const items = values.filter((value) => value.startsWith(normalized.trim()));
 			return items.length ? items.map((value) => ({ value, label: value })) : null;
 		},
 		handler: async (args, ctx) => {
 			const arg = args.trim().toLowerCase();
+			const [scope, value, ...extra] = arg.split(/\s+/).filter(Boolean);
+			if (scope === "default") {
+				if (extra.length > 0) {
+					ctx.ui.notify("Usage: /fast [on|off|status] or /fast default [on|off|status]", "error");
+					return;
+				}
+				if (!value) {
+					refreshConfig(ctx);
+					return setDefault(ctx, !config.active);
+				}
+				if (value === "on") return setDefault(ctx, true);
+				if (value === "off") return setDefault(ctx, false);
+				if (value === "status") return notifyDefault(ctx);
+				ctx.ui.notify("Usage: /fast [on|off|status] or /fast default [on|off|status]", "error");
+				return;
+			}
 			if (!arg) return setActive(ctx, !state.active);
 			if (arg === "on") return setActive(ctx, true);
 			if (arg === "off") return setActive(ctx, false);
@@ -552,7 +593,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 				updateStatus(ctx);
 				return notifyStatus(ctx);
 			}
-			ctx.ui.notify("Usage: /fast [on|off|status]", "error");
+			ctx.ui.notify("Usage: /fast [on|off|status] or /fast default [on|off|status]", "error");
 		},
 	});
 
