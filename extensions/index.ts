@@ -63,6 +63,7 @@ export const CODEX_PROVIDER = "openai-codex";
 // Footer statuses are rendered alphabetically by key; keep fast mode ahead of MCP.
 export const STATUS_KEY = "fast-mode";
 export const COMMAND_FAST = "fast";
+export const SESSION_STATE_TYPE = "fast-mode-state";
 
 /** Official Codex fast-mode credit multipliers per model (OpenAI Codex rate card). */
 export const OFFICIAL_FAST_MULTIPLIER: Record<string, number> = {
@@ -116,7 +117,9 @@ export interface SupportedModel {
 }
 
 export interface ConfigFile {
+	/** Record /fast changes in each session's history. */
 	persistState?: boolean;
+	/** Default fast-mode state for new sessions. */
 	active?: boolean;
 	serviceTier?: ServiceTier;
 	allowlist?: string[];
@@ -156,6 +159,23 @@ const DEFAULT_CONFIG: Required<Pick<ConfigFile, "persistState" | "active" | "ser
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stateFromSessionEntry(entry: unknown): RuntimeState | undefined {
+	if (!isRecord(entry) || entry.type !== "custom" || entry.customType !== SESSION_STATE_TYPE) return undefined;
+	if (!isRecord(entry.data) || typeof entry.data.active !== "boolean" || !isServiceTier(entry.data.serviceTier)) {
+		return undefined;
+	}
+	return { active: entry.data.active, serviceTier: entry.data.serviceTier };
+}
+
+/** Restore the latest fast-mode state on the active session branch. */
+export function readSessionState(entries: readonly unknown[]): RuntimeState | undefined {
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const state = stateFromSessionEntry(entries[index]);
+		if (state) return state;
+	}
+	return undefined;
 }
 
 export function isServiceTier(value: unknown): value is ServiceTier {
@@ -426,23 +446,33 @@ export function statusText(
 export default function piFastMode(pi: ExtensionAPI): void {
 	let config: ResolvedConfig = defaultResolvedConfig(process.cwd());
 	let state: RuntimeState = { active: config.active, serviceTier: config.serviceTier };
-	let runtimeOverride: RuntimeState | undefined;
 
 	function refreshConfig(ctx: ExtensionContext): ResolvedConfig {
 		config = resolveConfig(getConfigCwd(ctx));
-		state = runtimeOverride ?? { active: config.active, serviceTier: config.serviceTier };
 		return config;
 	}
 
-	function persistState(next: ResolvedConfig): void {
-		if (!next.persistState) return;
-		writeConfig(next.configPath, {
-			...(readConfig(next.configPath) ?? undefined),
-			active: state.active,
-			serviceTier: state.serviceTier,
-			allowlist: next.allowlist.map((model) => `${model.provider}/${model.id}`),
-			blocklist: next.blocklist.map((model) => `${model.provider}/${model.id}`),
-		});
+	function appendSessionState(): void {
+		if (!config.persistState) return;
+		pi.appendEntry(SESSION_STATE_TYPE, { ...state });
+	}
+
+	function restoreSessionState(ctx: ExtensionContext, reason: string | undefined): void {
+		const entries = ctx.sessionManager.getEntries();
+		const saved = readSessionState(ctx.sessionManager.getBranch());
+		if (saved) {
+			state = saved;
+			return;
+		}
+
+		// A global default applies only to a new/empty session. An existing
+		// session created before this extension recorded state stays off rather
+		// than being changed retroactively by the global config.
+		state = {
+			active: reason === "new" || entries.length === 0 ? config.active : false,
+			serviceTier: config.serviceTier,
+		};
+		appendSessionState();
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
@@ -476,9 +506,8 @@ export default function piFastMode(pi: ExtensionAPI): void {
 
 	function setActive(ctx: ExtensionContext, active: boolean): void {
 		refreshConfig(ctx);
-		state.active = active;
-		runtimeOverride = { ...state };
-		persistState(config);
+		state = { ...state, active };
+		appendSessionState();
 		updateStatus(ctx);
 		notifyStatus(ctx);
 	}
@@ -518,10 +547,22 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		refreshConfig(ctx);
+		restoreSessionState(ctx, event.reason);
 		updateStatus(ctx);
 		if (state.active) notifyStatus(ctx);
+	});
+
+	pi.on("session_tree", async (_event, ctx) => {
+		refreshConfig(ctx);
+		const saved = readSessionState(ctx.sessionManager.getBranch());
+		if (saved) {
+			state = saved;
+		} else if (config.persistState) {
+			state = { active: false, serviceTier: config.serviceTier };
+		}
+		updateStatus(ctx);
 	});
 
 	pi.on("model_select", async (_event, ctx) => {

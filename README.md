@@ -35,10 +35,12 @@ Model selection per request: `(built-in defaults ∪ allowlist) − blocklist`; 
 
 ## Configuration
 
-Config resolves project-over-global, is created on first use, and persists `active` state across sessions:
+Config resolves project-over-global and provides defaults for new sessions:
 
 - global: `~/.pi/agent/extensions/pi-fast-mode.json`
 - project: `.pi/extensions/pi-fast-mode.json`
+
+Fast-mode state is recorded in each session's history, like model changes. Resuming a session restores its own state; changing the global default does not retroactively enable fast mode in an existing session. Sessions created before this state was recorded default to off and are given an explicit off state when opened. `/fast` changes the current session only; edit `active` in the config to change the default for new sessions. With `persistState: false`, `/fast` changes remain runtime-only.
 
 ```json
 {
@@ -57,6 +59,7 @@ Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Eac
 ## How it works
 
 - Overlays the existing `openai-codex` provider with an API-layer stream handler that adds `serviceTier` to request options on allowlisted models, preserving Pi's built-in Codex models and authentication.
+- Uses session custom entries to restore fast-mode state per session and keeps the global `active` setting as the default for new sessions.
 - pi-ai converts `options.serviceTier` into the `service_tier` request body field and applies its priority cost multiplier, so the request path is unchanged.
 - Fast-mode cost accounting: on terminal stream events the extension re-runs pi-ai's `calculateCost` (token counts × `model.cost`, tier-aware), excludes Codex cache writes, and applies the official rate-card multiplier on top. This is independent of pi-ai's internal multiplier table, so it stays correct if pi-ai changes its internals. Token counts are real and never modified.
 

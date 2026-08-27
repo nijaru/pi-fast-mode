@@ -16,6 +16,8 @@ import piFastMode, {
 	readConfig,
 	resolveConfig,
 	resolveServiceTierForModel,
+	readSessionState,
+	SESSION_STATE_TYPE,
 	SPECS,
 	statusText,
 	withFastModePricing,
@@ -122,6 +124,26 @@ describe("isModelAllowed", () => {
 	});
 	test("non-listed model is rejected", () => {
 		expect(isModelAllowed(codexModel("deepseek-v4-flash"), SPECS, filter)).toBe(false);
+	});
+});
+
+describe("session state", () => {
+	test("restores the latest state on the active branch", () => {
+		expect(
+			readSessionState([
+				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
+				{ type: "custom", customType: "other-state", data: { active: false } },
+				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: false, serviceTier: "priority" } },
+			]),
+		).toEqual({ active: false, serviceTier: "priority" });
+	});
+
+	test("ignores malformed state entries", () => {
+		expect(
+			readSessionState([
+				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "unsupported" } },
+			]),
+		).toBeUndefined();
 	});
 });
 
@@ -365,6 +387,7 @@ describe("extension registration", () => {
 			const notices: string[] = [];
 			const pi = {
 				registerProvider() {},
+				appendEntry() {},
 				registerCommand(name: string, command: { handler: Function }) {
 					commands[name] = command;
 				},
@@ -385,6 +408,10 @@ describe("extension registration", () => {
 						notices.push(message);
 					},
 				},
+				sessionManager: {
+					getEntries: () => [],
+					getBranch: () => [],
+				},
 			};
 			await events.session_start?.({}, ctx);
 			await commands.fast?.handler("on", ctx);
@@ -398,8 +425,193 @@ describe("extension registration", () => {
 		}
 	});
 
+	test("keeps existing sessions off when the global default is enabled", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-session-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeConfig(configPath, { active: true, persistState: true, serviceTier: "priority" });
+
+			const entries: unknown[] = [{ type: "message", message: { role: "user", content: "old" } }];
+			const appended: unknown[] = [];
+			const events: Record<string, Function> = {};
+			const pi = {
+				registerProvider() {},
+				appendEntry(type: string, data: unknown) {
+					const entry = { type: "custom", customType: type, data };
+					entries.push(entry);
+					appended.push(entry);
+				},
+				registerCommand() {},
+				on(name: string, handler: Function) {
+					events[name] = handler;
+				},
+			};
+			piFastMode(pi as never);
+
+			const ctx = {
+				cwd: dir,
+				model: codexModel("gpt-5.6-luna"),
+				ui: { setStatus() {}, notify() {} },
+				sessionManager: {
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+			};
+			await events.session_start?.({ reason: "resume" }, ctx);
+
+			expect(appended).toEqual([
+				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: false, serviceTier: "priority" } },
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("uses the global default for a new session", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-session-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeConfig(configPath, { active: true, persistState: true, serviceTier: "priority" });
+
+			const entries: unknown[] = [];
+			const statuses: Array<string | undefined> = [];
+			const events: Record<string, Function> = {};
+			const pi = {
+				registerProvider() {},
+				appendEntry(type: string, data: unknown) {
+					entries.push({ type: "custom", customType: type, data });
+				},
+				registerCommand() {},
+				on(name: string, handler: Function) {
+					events[name] = handler;
+				},
+			};
+			piFastMode(pi as never);
+
+			const ctx = {
+				cwd: dir,
+				model: codexModel("gpt-5.6-luna"),
+				ui: {
+					setStatus(_key: string, value: string | undefined) {
+						statuses.push(value);
+					},
+					notify() {},
+				},
+				sessionManager: {
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+			};
+			await events.session_start?.({ reason: "new" }, ctx);
+
+			expect(statuses).toEqual(["⚡ FAST · $ 2.5×"]);
+			expect(entries).toEqual([
+				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("persists /fast changes in the session without changing the global default", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-session-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
+
+			const entries: unknown[] = [];
+			const commands: Record<string, { handler: Function }> = {};
+			const events: Record<string, Function> = {};
+			const pi = {
+				registerProvider() {},
+				appendEntry(type: string, data: unknown) {
+					entries.push({ type: "custom", customType: type, data });
+				},
+				registerCommand(name: string, command: { handler: Function }) {
+					commands[name] = command;
+				},
+				on(name: string, handler: Function) {
+					events[name] = handler;
+				},
+			};
+			piFastMode(pi as never);
+
+			const ctx = {
+				cwd: dir,
+				model: codexModel("gpt-5.6-luna"),
+				ui: { setStatus() {}, notify() {} },
+				sessionManager: {
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+			};
+			await events.session_start?.({ reason: "new" }, ctx);
+			await commands.fast?.handler("on", ctx);
+
+			expect(entries.at(-1)).toEqual({
+				type: "custom",
+				customType: SESSION_STATE_TYPE,
+				data: { active: true, serviceTier: "priority" },
+			});
+			expect(readConfig(configPath)?.active).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("restores a persisted state instead of using the global default", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-session-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
+
+			const entries: unknown[] = [
+				{ type: "message", message: { role: "user", content: "old" } },
+				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
+			];
+			const statuses: Array<string | undefined> = [];
+			const events: Record<string, Function> = {};
+			const pi = {
+				registerProvider() {},
+				appendEntry() {},
+				registerCommand() {},
+				on(name: string, handler: Function) {
+					events[name] = handler;
+				},
+			};
+			piFastMode(pi as never);
+
+			const ctx = {
+				cwd: dir,
+				model: codexModel("gpt-5.6-luna"),
+				ui: {
+					setStatus(_key: string, value: string | undefined) {
+						statuses.push(value);
+					},
+					notify() {},
+				},
+				sessionManager: {
+					getEntries: () => entries,
+					getBranch: () => entries,
+				},
+			};
+			await events.session_start?.({ reason: "resume" }, ctx);
+
+			expect(statuses).toEqual(["⚡ FAST · $ 2.5×"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("sends priority service_tier through the overlaid Codex provider", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-live-"));
+		const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+		mkdirSync(dirname(configPath), { recursive: true });
+		writeConfig(configPath, { active: false, persistState: false, serviceTier: "priority" });
 		let body: Record<string, unknown> | undefined;
 		const server = Bun.serve({
 			port: 0,
@@ -414,6 +626,7 @@ describe("extension registration", () => {
 			const events: Record<string, Function> = {};
 			const pi = {
 				registerFlag() {},
+				appendEntry() {},
 				registerProvider(_name: string, config: { streamSimple: Function }) {
 					registrations.push({ config });
 				},
@@ -448,6 +661,10 @@ describe("extension registration", () => {
 				messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
 				tools: [],
 				ui: { setStatus() {}, notify() {} },
+				sessionManager: {
+					getEntries: () => [],
+					getBranch: () => [],
+				},
 			};
 			await events.session_start?.({}, ctx);
 			await commands.fast?.handler("on", ctx);
