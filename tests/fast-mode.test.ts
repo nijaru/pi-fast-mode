@@ -374,7 +374,7 @@ describe("extension registration", () => {
 		expect(registrations[0]?.config.api).toBe("openai-codex-responses");
 	});
 
-	test("preserves the command scope when completing default arguments", () => {
+	test("completes the supported command arguments", () => {
 		let command: { getArgumentCompletions?: (prefix: string) => unknown } | undefined;
 		const pi = {
 			registerProvider() {},
@@ -386,14 +386,14 @@ describe("extension registration", () => {
 
 		piFastMode(pi as never);
 
-		expect(command?.getArgumentCompletions?.("default ")).toEqual([
-			{ value: "default on", label: "on" },
-			{ value: "default off", label: "off" },
-			{ value: "default status", label: "status" },
+		expect(command?.getArgumentCompletions?.(" ")).toEqual([
+			{ value: "on", label: "on" },
+			{ value: "off", label: "off" },
+			{ value: "status", label: "status" },
 		]);
 	});
 
-	test("keeps /fast on enabled for a session-only config across /fast status", async () => {
+	test("updates the current session and default when enabled", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-state-"));
 		try {
 			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
@@ -441,7 +441,7 @@ describe("extension registration", () => {
 
 			expect(statuses).toEqual([undefined, "⚡ FAST · $ 2.5×", "⚡ FAST · $ 2.5×"]);
 			expect(notices.at(-1)).toContain("Fast mode: priority service tier");
-			expect(readConfig(configPath)?.active).toBe(false);
+			expect(readConfig(configPath)?.active).toBe(true);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -543,7 +543,7 @@ describe("extension registration", () => {
 		}
 	});
 
-	test("persists /fast changes in the session without changing the global default", async () => {
+	test("persists /fast changes in the session and as the global default", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-session-"));
 		try {
 			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
@@ -584,26 +584,27 @@ describe("extension registration", () => {
 				customType: SESSION_STATE_TYPE,
 				data: { active: true, serviceTier: "priority" },
 			});
-			expect(readConfig(configPath)?.active).toBe(false);
+			expect(readConfig(configPath)?.active).toBe(true);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
-	test("toggles the new-session default without changing the current session", async () => {
+	test("uses the latest /fast setting for a future session", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-default-"));
 		try {
 			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
 			mkdirSync(dirname(configPath), { recursive: true });
-			writeConfig(configPath, { active: false, persistState: false, serviceTier: "priority" });
+			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
 
 			const entries: unknown[] = [];
 			const commands: Record<string, { handler: Function }> = {};
 			const events: Record<string, Function> = {};
-			const notices: string[] = [];
 			const pi = {
 				registerProvider() {},
-				appendEntry() {},
+				appendEntry(type: string, data: unknown) {
+					entries.push({ type: "custom", customType: type, data });
+				},
 				registerCommand(name: string, command: { handler: Function }) {
 					commands[name] = command;
 				},
@@ -616,25 +617,58 @@ describe("extension registration", () => {
 			const ctx = {
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
-				ui: {
-					setStatus() {},
-					notify(message: string) {
-						notices.push(message);
-					},
-				},
+				ui: { setStatus() {}, notify() {} },
 				sessionManager: {
 					getEntries: () => entries,
 					getBranch: () => entries,
 				},
 			};
 			await events.session_start?.({ reason: "new" }, ctx);
-			await commands.fast?.handler("default on", ctx);
+			await commands.fast?.handler("on", ctx);
 
 			expect(readConfig(configPath)?.active).toBe(true);
-			expect(notices.at(-1)).toContain("default: on");
-			expect(notices.at(-1)).toContain("for new sessions");
-			await commands.fast?.handler("status", ctx);
-			expect(notices.at(-1)).toContain("Fast mode is off");
+			expect(entries.at(-1)).toEqual({
+				type: "custom",
+				customType: SESSION_STATE_TYPE,
+				data: { active: true, serviceTier: "priority" },
+			});
+
+			const newEntries: unknown[] = [
+				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
+				{ type: "thinking_level_change", thinkingLevel: "off" },
+			];
+			const newStatuses: Array<string | undefined> = [];
+			const newEvents: Record<string, Function> = {};
+			const newPi = {
+				registerProvider() {},
+				appendEntry(type: string, data: unknown) {
+					newEntries.push({ type: "custom", customType: type, data });
+				},
+				registerCommand() {},
+				on(name: string, handler: Function) {
+					newEvents[name] = handler;
+				},
+			};
+			piFastMode(newPi as never);
+
+			const newCtx = {
+				cwd: dir,
+				model: codexModel("gpt-5.6-luna"),
+				ui: { setStatus: (_key: string, value: string | undefined) => newStatuses.push(value), notify() {} },
+				sessionManager: {
+					getEntries: () => newEntries,
+					getBranch: () => newEntries,
+					buildContextEntries: () => newEntries,
+				},
+			};
+			await newEvents.session_start?.({ reason: "startup" }, newCtx);
+
+			expect(newStatuses).toEqual(["⚡ FAST · $ 2.5×"]);
+			expect(newEntries.at(-1)).toEqual({
+				type: "custom",
+				customType: SESSION_STATE_TYPE,
+				data: { active: true, serviceTier: "priority" },
+			});
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
