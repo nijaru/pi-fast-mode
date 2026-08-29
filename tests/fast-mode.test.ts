@@ -374,6 +374,25 @@ describe("extension registration", () => {
 		expect(registrations[0]?.config.api).toBe("openai-codex-responses");
 	});
 
+	test("preserves the command scope when completing default arguments", () => {
+		let command: { getArgumentCompletions?: (prefix: string) => unknown } | undefined;
+		const pi = {
+			registerProvider() {},
+			registerCommand(_name: string, value: { getArgumentCompletions?: (prefix: string) => unknown }) {
+				command = value;
+			},
+			on() {},
+		};
+
+		piFastMode(pi as never);
+
+		expect(command?.getArgumentCompletions?.("default ")).toEqual([
+			{ value: "default on", label: "on" },
+			{ value: "default off", label: "off" },
+			{ value: "default status", label: "status" },
+		]);
+	});
+
 	test("keeps /fast on enabled for a session-only config across /fast status", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-state-"));
 		try {

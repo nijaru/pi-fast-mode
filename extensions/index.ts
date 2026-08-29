@@ -561,7 +561,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 				const subprefix = normalized.slice("default ".length).trim();
 				const values = ["on", "off", "status"];
 				const items = values.filter((value) => value.startsWith(subprefix));
-				return items.length ? items.map((value) => ({ value, label: value })) : null;
+				return items.length ? items.map((value) => ({ value: `default ${value}`, label: value })) : null;
 			}
 			const values = ["on", "off", "status", "default"];
 			const items = values.filter((value) => value.startsWith(normalized.trim()));
