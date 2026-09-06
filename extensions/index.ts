@@ -535,7 +535,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		}
 		if (state.active) {
 			const tiers = ctx.model ? getModelsForApi(SPECS, ctx.model.api) : [];
-		if (ctx.model && tiers.length > 0 && !tiers.includes(state.serviceTier)) {
+			if (ctx.model && tiers.length > 0 && !tiers.includes(state.serviceTier)) {
 				ctx.ui.notify(
 					`Fast mode is on, but the configured service tier "${state.serviceTier}" is not accepted by ${ctx.model.api}. Supported: ${tiers.join(", ")}.`,
 					"warning",
