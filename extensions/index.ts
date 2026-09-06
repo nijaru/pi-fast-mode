@@ -534,6 +534,14 @@ export default function piFastMode(pi: ExtensionAPI): void {
 			return;
 		}
 		if (state.active) {
+			const tiers = ctx.model ? getModelsForApi(SPECS, ctx.model.api) : [];
+		if (ctx.model && tiers.length > 0 && !tiers.includes(state.serviceTier)) {
+				ctx.ui.notify(
+					`Fast mode is on, but the configured service tier "${state.serviceTier}" is not accepted by ${ctx.model.api}. Supported: ${tiers.join(", ")}.`,
+					"warning",
+				);
+				return;
+			}
 			ctx.ui.notify(
 				`Fast mode is on, but ${modelKey} is not tierable (missing API spec, not on the default/allowlist, or blocked). Mentioned models: ${supportedListText(filter)}.`,
 				"warning",

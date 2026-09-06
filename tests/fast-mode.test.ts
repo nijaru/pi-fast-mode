@@ -30,6 +30,51 @@ const codexModel = (id: string) => ({
 	api: "openai-codex-responses" as const,
 });
 
+/** Minimal fake pi + ctx harness shared by the registration tests. */
+function extensionHarness(opts: {
+	cwd: string;
+	entries?: unknown[];
+	model?: ReturnType<typeof codexModel> | undefined;
+	buildContextEntries?: () => unknown[] | undefined;
+}) {
+	const entries: unknown[] = opts.entries ?? [];
+	const events: Record<string, Function> = {};
+	const commands: Record<string, { handler: Function }> = {};
+	const statuses: Array<string | undefined> = [];
+	const notices: Array<{ message: string; level: string }> = [];
+	const pi = {
+		registerProvider() {},
+		appendEntry(type: string, data: unknown) {
+			entries.push({ type: "custom", customType: type, data });
+		},
+		registerCommand(name: string, command: { handler: Function }) {
+			commands[name] = command;
+		},
+		on(name: string, handler: Function) {
+			events[name] = handler;
+		},
+	};
+	piFastMode(pi as never);
+	const ctx = {
+		cwd: opts.cwd,
+		model: opts.model,
+		ui: {
+			setStatus(_key: string, value: string | undefined) {
+				statuses.push(value);
+			},
+			notify(message: string, level: string) {
+				notices.push({ message, level });
+			},
+		},
+		sessionManager: {
+			getEntries: () => entries,
+			getBranch: () => entries,
+			buildContextEntries: opts.buildContextEntries,
+		},
+	};
+	return { pi, ctx, entries, events, commands, statuses, notices };
+}
+
 const stateOn = { active: true, serviceTier: "priority" as const };
 const stateOff = { active: false, serviceTier: "priority" as const };
 
@@ -426,47 +471,41 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: false, persistState: false, serviceTier: "priority" });
 
-			const entries: unknown[] = [
-				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
-			];
-			const events: Record<string, Function> = {};
-			const commands: Record<string, { handler: Function }> = {};
-			const statuses: Array<string | undefined> = [];
-			const notices: string[] = [];
-			const pi = {
-				registerProvider() {},
-				appendEntry() {},
-				registerCommand(name: string, command: { handler: Function }) {
-					commands[name] = command;
-				},
-				on(name: string, handler: Function) {
-					events[name] = handler;
-				},
-			};
-			piFastMode(pi as never);
-
-			const ctx = {
+			const { ctx, events, commands, statuses, notices } = extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
-				ui: {
-					setStatus(_key: string, value: string | undefined) {
-						statuses.push(value);
-					},
-					notify(message: string) {
-						notices.push(message);
-					},
-				},
-				sessionManager: {
-					getEntries: () => entries,
-					getBranch: () => entries,
-				},
-			};
+				entries: [{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } }],
+			});
 			await events.session_start?.({}, ctx);
 			await commands.fast?.handler("on", ctx);
 			await commands.fast?.handler("status", ctx);
 
 			expect(statuses).toEqual([undefined, "⚡ FAST · $ 2.5×", "⚡ FAST · $ 2.5×"]);
-			expect(notices.at(-1)).toContain("Fast mode: priority service tier");
+			expect(notices.at(-1)?.message).toContain("Fast mode: priority service tier");
+			expect(readConfig(configPath)?.active).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("status distinguishes an unsupported configured tier from an unlisted model", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-tier-status-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeConfig(configPath, { active: false, persistState: false, serviceTier: "flex" });
+
+			const { ctx, events, commands, notices } = extensionHarness({
+				cwd: dir,
+				model: codexModel("gpt-5.6-luna"),
+			});
+			await events.session_start?.({}, ctx);
+			await commands.fast?.handler("on", ctx);
+
+			const last = notices.at(-1);
+			expect(last?.level).toBe("warning");
+			expect(last?.message).toContain('"flex" is not accepted by openai-codex-responses');
+			expect(last?.message).not.toContain("not tierable");
 			expect(readConfig(configPath)?.active).toBe(true);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -480,35 +519,15 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: true, persistState: true, serviceTier: "priority" });
 
-			const entries: unknown[] = [{ type: "message", message: { role: "user", content: "old" } }];
-			const appended: unknown[] = [];
-			const events: Record<string, Function> = {};
-			const pi = {
-				registerProvider() {},
-				appendEntry(type: string, data: unknown) {
-					const entry = { type: "custom", customType: type, data };
-					entries.push(entry);
-					appended.push(entry);
-				},
-				registerCommand() {},
-				on(name: string, handler: Function) {
-					events[name] = handler;
-				},
-			};
-			piFastMode(pi as never);
-
-			const ctx = {
+			const { ctx, events, entries } = extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
-				ui: { setStatus() {}, notify() {} },
-				sessionManager: {
-					getEntries: () => entries,
-					getBranch: () => entries,
-				},
-			};
+				entries: [{ type: "message", message: { role: "user", content: "old" } }],
+			});
 			await events.session_start?.({ reason: "resume" }, ctx);
 
-			expect(appended).toEqual([
+			expect(entries).toEqual([
+				{ type: "message", message: { role: "user", content: "old" } },
 				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: false, serviceTier: "priority" } },
 			]);
 		} finally {
@@ -523,42 +542,19 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: true, persistState: true, serviceTier: "priority" });
 
-			const entries: unknown[] = [
+			const initialEntries = [
 				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
 			];
-			const statuses: Array<string | undefined> = [];
-			const events: Record<string, Function> = {};
-			const pi = {
-				registerProvider() {},
-				appendEntry(type: string, data: unknown) {
-					entries.push({ type: "custom", customType: type, data });
-				},
-				registerCommand() {},
-				on(name: string, handler: Function) {
-					events[name] = handler;
-				},
-			};
-			piFastMode(pi as never);
-
-			const ctx = {
+			const { ctx, events, statuses, entries } = extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
-				ui: {
-					setStatus(_key: string, value: string | undefined) {
-						statuses.push(value);
-					},
-					notify() {},
-				},
-				sessionManager: {
-					getEntries: () => entries,
-					getBranch: () => entries,
-					buildContextEntries: () => entries,
-				},
-			};
+				entries: initialEntries,
+				buildContextEntries: () => entries,
+			});
 			await events.session_start?.({ reason: "startup" }, ctx);
 
-			expect(statuses).toEqual(["⚡ FAST · $ 2.5×"]);
+			expect(statuses).toEqual(["\u26a1 FAST \u00b7 $ 2.5\u00d7"]);
 			expect(entries).toEqual([
 				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
@@ -576,32 +572,10 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
 
-			const entries: unknown[] = [];
-			const commands: Record<string, { handler: Function }> = {};
-			const events: Record<string, Function> = {};
-			const pi = {
-				registerProvider() {},
-				appendEntry(type: string, data: unknown) {
-					entries.push({ type: "custom", customType: type, data });
-				},
-				registerCommand(name: string, command: { handler: Function }) {
-					commands[name] = command;
-				},
-				on(name: string, handler: Function) {
-					events[name] = handler;
-				},
-			};
-			piFastMode(pi as never);
-
-			const ctx = {
+			const { ctx, events, commands, entries } = extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
-				ui: { setStatus() {}, notify() {} },
-				sessionManager: {
-					getEntries: () => entries,
-					getBranch: () => entries,
-				},
-			};
+			});
 			await events.session_start?.({ reason: "new" }, ctx);
 			await commands.fast?.handler("on", ctx);
 
@@ -623,32 +597,10 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
 
-			const entries: unknown[] = [];
-			const commands: Record<string, { handler: Function }> = {};
-			const events: Record<string, Function> = {};
-			const pi = {
-				registerProvider() {},
-				appendEntry(type: string, data: unknown) {
-					entries.push({ type: "custom", customType: type, data });
-				},
-				registerCommand(name: string, command: { handler: Function }) {
-					commands[name] = command;
-				},
-				on(name: string, handler: Function) {
-					events[name] = handler;
-				},
-			};
-			piFastMode(pi as never);
-
-			const ctx = {
+			const { ctx, events, commands, entries } = extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
-				ui: { setStatus() {}, notify() {} },
-				sessionManager: {
-					getEntries: () => entries,
-					getBranch: () => entries,
-				},
-			};
+			});
 			await events.session_start?.({ reason: "new" }, ctx);
 			await commands.fast?.handler("on", ctx);
 
@@ -659,38 +611,20 @@ describe("extension registration", () => {
 				data: { active: true, serviceTier: "priority" },
 			});
 
-			const newEntries: unknown[] = [
+			const futureEntries = [
 				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
 			];
-			const newStatuses: Array<string | undefined> = [];
-			const newEvents: Record<string, Function> = {};
-			const newPi = {
-				registerProvider() {},
-				appendEntry(type: string, data: unknown) {
-					newEntries.push({ type: "custom", customType: type, data });
-				},
-				registerCommand() {},
-				on(name: string, handler: Function) {
-					newEvents[name] = handler;
-				},
-			};
-			piFastMode(newPi as never);
-
-			const newCtx = {
+			const future = extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
-				ui: { setStatus: (_key: string, value: string | undefined) => newStatuses.push(value), notify() {} },
-				sessionManager: {
-					getEntries: () => newEntries,
-					getBranch: () => newEntries,
-					buildContextEntries: () => newEntries,
-				},
-			};
-			await newEvents.session_start?.({ reason: "startup" }, newCtx);
+				entries: futureEntries,
+				buildContextEntries: () => futureEntries,
+			});
+			await future.events.session_start?.({ reason: "startup" }, future.ctx);
 
-			expect(newStatuses).toEqual(["⚡ FAST · $ 2.5×"]);
-			expect(newEntries.at(-1)).toEqual({
+			expect(future.statuses).toEqual(["\u26a1 FAST \u00b7 $ 2.5\u00d7"]);
+			expect(future.entries.at(-1)).toEqual({
 				type: "custom",
 				customType: SESSION_STATE_TYPE,
 				data: { active: true, serviceTier: "priority" },
@@ -707,39 +641,17 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
 
-			const entries: unknown[] = [
-				{ type: "message", message: { role: "user", content: "old" } },
-				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
-			];
-			const statuses: Array<string | undefined> = [];
-			const events: Record<string, Function> = {};
-			const pi = {
-				registerProvider() {},
-				appendEntry() {},
-				registerCommand() {},
-				on(name: string, handler: Function) {
-					events[name] = handler;
-				},
-			};
-			piFastMode(pi as never);
-
-			const ctx = {
+			const { ctx, events, statuses } = extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
-				ui: {
-					setStatus(_key: string, value: string | undefined) {
-						statuses.push(value);
-					},
-					notify() {},
-				},
-				sessionManager: {
-					getEntries: () => entries,
-					getBranch: () => entries,
-				},
-			};
+				entries: [
+					{ type: "message", message: { role: "user", content: "old" } },
+					{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
+				],
+			});
 			await events.session_start?.({ reason: "resume" }, ctx);
 
-			expect(statuses).toEqual(["⚡ FAST · $ 2.5×"]);
+			expect(statuses).toEqual(["\u26a1 FAST \u00b7 $ 2.5\u00d7"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
