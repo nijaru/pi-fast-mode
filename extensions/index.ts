@@ -429,10 +429,10 @@ export function withFastModePricing(
 }
 
 /**
- * Rebuild request options the way pi's provider layer expects: forward the
- * caller's options, keep reasoning as a concrete effort, cap maxTokens, and add
- * `serviceTier` only when a tier applies for this model. Mirrors the option
- * handling of the published pi-openai-service-tier extension.
+ * Rebuild request options for the raw Codex stream: forward the caller's
+ * options, keep reasoning as a concrete effort (mirroring pi-ai's streamSimple),
+ * and add `serviceTier` only when a tier applies for this model. The Codex
+ * request body has no max_tokens field, so maxTokens is never forwarded.
  */
 export function buildFullOpenAIOptions(
 	model: Model<Api>,
@@ -443,7 +443,6 @@ export function buildFullOpenAIOptions(
 	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
 	const result: OpenAIServiceTierOptions = {
 		...options,
-		maxTokens: options?.maxTokens ?? (model.maxTokens > 0 ? Math.min(model.maxTokens, 32_000) : undefined),
 		reasoningEffort,
 	};
 	if (serviceTier) result.serviceTier = serviceTier;
