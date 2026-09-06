@@ -32,7 +32,9 @@ When enabled and the active model is supported, a compact footer status shows `�
 
 Credit multipliers (rate card): 2.5x for GPT-6 Astra, GPT-5.6, and GPT-5.5; 2x for GPT-5.4. GPT-5.4 mini is excluded from the defaults — OpenAI's Speed doc names only "GPT-5.6, GPT-5.5, and GPT-5.4" for fast mode without clarifying whether the 5.4 family includes mini. Add `openai-codex/gpt-5.4-mini` to `allowlist` if it works on your account.
 
-Model selection per request: `(built-in defaults ∪ allowlist) − blocklist`; the model's API must also be spec'd (currently `openai-codex-responses` only). Edit `allowlist`/`blocklist` in the config to override the built-in defaults — add a custom `models.json` entry on a spec'd API, or block `gpt-5.5` for cost reasons. `service_tier` only exists on OpenAI Responses-style APIs, so other APIs are never touched even if allowlisted.
+Model selection per request: `(built-in defaults ∪ allowlist) − blocklist`; the model's API must also be spec'd (currently `openai-codex-responses` only). Edit `allowlist`/`blocklist` in the config to override the built-in defaults — add a custom `models.json` entry on a spec'd API, or block `gpt-5.5` for cost reasons. Only spec'd APIs are ever touched, so other APIs are never modified even if allowlisted.
+
+Other providers expose speed differently and are deliberately out of scope: Anthropic fast mode and Gemini priority inference are per-request tiers but need response-driven or rate-card pricing pi-ai does not surface yet (pi issue [#1381](https://github.com/earendil-works/pi/issues/1381)); OpenRouter and xAI ship speed as separate model variants (`:nitro`, Grok Fast), which need no extension.
 
 ## Configuration
 
