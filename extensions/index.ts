@@ -91,6 +91,8 @@ export const DEFAULT_FAST_MODE_MODELS = [
  * the extension is driven off these.
  */
 export interface ApiTierSpec {
+	/** Provider whose models on `api` should receive the overlay. */
+	provider: string;
 	api: Api;
 	/** Tiers this API accepts. openai-codex-responses accepts only `priority`. */
 	supportedTiers: readonly ServiceTier[];
@@ -105,6 +107,7 @@ export interface ApiTierSpec {
 }
 
 export const CODEX_RESPONSES_SPEC: ApiTierSpec = {
+	provider: CODEX_PROVIDER,
 	api: "openai-codex-responses",
 	supportedTiers: ["priority"],
 	defaultModels: [...DEFAULT_FAST_MODE_MODELS],
@@ -552,7 +555,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 
 	for (const spec of SPECS) {
 		// Overlay the built-in provider to preserve its models and authentication.
-		pi.registerProvider(CODEX_PROVIDER, {
+		pi.registerProvider(spec.provider, {
 			api: spec.api,
 			streamSimple(model, context, options) {
 				const filter = buildModelFilter(SPECS, config);

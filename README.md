@@ -55,7 +55,7 @@ Fast-mode state is recorded in each session's history, like model changes. `/fas
 
 ## Adding another provider/API
 
-Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Each spec declares the API name, the tiers that API accepts, a default model allowlist, and the raw pi-ai stream call. Commands, config, pricing, and the footer status are spec-driven, so adding an API is one spec plus one provider-overlay registration — no structural refactor.
+Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Each spec declares the provider it overlays, the API name, the tiers that API accepts, a default model allowlist, and the raw pi-ai stream call; the spec registers its own provider overlay. Commands, config, pricing, and the footer status are spec-driven, so adding an API is one spec — no structural refactor.
 
 ## How it works
 
