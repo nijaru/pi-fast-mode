@@ -172,6 +172,7 @@ describe("resolveServiceTierForModel", () => {
 
 describe("fast-mode pricing", () => {
 	test("official multipliers per rate card", () => {
+		expect(OFFICIAL_FAST_MULTIPLIER["gpt-6-astra"]).toBe(2.5);
 		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.6-sol"]).toBe(2.5);
 		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.6-terra"]).toBe(2.5);
 		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.6-luna"]).toBe(2.5);

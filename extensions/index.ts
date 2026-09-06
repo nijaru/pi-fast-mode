@@ -67,6 +67,7 @@ export const SESSION_STATE_TYPE = "fast-mode-state";
 
 /** Official Codex fast-mode credit multipliers per model (OpenAI Codex rate card). */
 export const OFFICIAL_FAST_MULTIPLIER: Record<string, number> = {
+	"gpt-6-astra": 2.5,
 	"gpt-5.6-sol": 2.5,
 	"gpt-5.6-terra": 2.5,
 	"gpt-5.6-luna": 2.5,
@@ -76,6 +77,7 @@ export const OFFICIAL_FAST_MULTIPLIER: Record<string, number> = {
 
 /** Built-in supported models for the OpenAI Codex provider. */
 export const DEFAULT_FAST_MODE_MODELS = [
+	"openai-codex/gpt-6-astra",
 	"openai-codex/gpt-5.6-sol",
 	"openai-codex/gpt-5.6-terra",
 	"openai-codex/gpt-5.6-luna",

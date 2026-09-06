@@ -2,7 +2,7 @@
 
 Toggle OpenAI Codex fast mode (`service_tier: "priority"`) in [pi](https://github.com/earendil-works/pi) with correct footer cost accounting.
 
-Fast mode runs supported GPT-5.6 / GPT-5.5 / GPT-5.4 models at roughly 1.5x speed, while charging a higher credit rate: 2.5x for GPT-5.6/5.5 and 2x for GPT-5.4. This extension injects `service_tier: "priority"` into supported OpenAI Codex requests when enabled, and prices the displayed footer cost independently of pi's internals: on each terminal turn it recomputes cost from raw tokens × model rates × the official rate-card multiplier.
+Fast mode runs supported GPT-6 Astra, GPT-5.6 / GPT-5.5 / GPT-5.4 models at roughly 1.5x speed, while charging a higher credit rate: 2.5x for GPT-6 Astra, GPT-5.6, and GPT-5.5, and 2x for GPT-5.4. This extension injects `service_tier: "priority"` into supported OpenAI Codex requests when enabled, and prices the displayed footer cost independently of pi's internals: on each terminal turn it recomputes cost from raw tokens × model rates × the official rate-card multiplier.
 
 ## Installation
 
@@ -25,11 +25,12 @@ When enabled and the active model is supported, a compact footer status shows `�
 
 ## Supported models
 
+- `openai-codex/gpt-6-astra`
 - `openai-codex/gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
 - `openai-codex/gpt-5.5`
 - `openai-codex/gpt-5.4`
 
-Credit multipliers (rate card): 2.5x for GPT-5.6 and GPT-5.5, 2x for GPT-5.4.
+Credit multipliers (rate card): 2.5x for GPT-6 Astra, GPT-5.6, and GPT-5.5; 2x for GPT-5.4. GPT-5.4 mini is excluded from the defaults — OpenAI's Speed doc names only "GPT-5.6, GPT-5.5, and GPT-5.4" for fast mode without clarifying whether the 5.4 family includes mini. Add `openai-codex/gpt-5.4-mini` to `allowlist` if it works on your account.
 
 Model selection per request: `(built-in defaults ∪ allowlist) − blocklist`; the model's API must also be spec'd (currently `openai-codex-responses` only). Edit `allowlist`/`blocklist` in the config to override the built-in defaults — add a custom `models.json` entry on a spec'd API, or block `gpt-5.5` for cost reasons. `service_tier` only exists on OpenAI Responses-style APIs, so other APIs are never touched even if allowlisted.
 
