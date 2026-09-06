@@ -33,6 +33,7 @@ import { calculateCost, clampThinkingLevel, createAssistantMessageEventStream } 
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import type {
 	Api,
+	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
 	Context,
@@ -380,6 +381,27 @@ function scaleEventUsage(event: AssistantMessageEvent, model: Model<Api>, multip
  * Wrap the raw stream, forwarding every event unchanged but recomputing the
  * fast-mode cost on the terminal done/error events.
  */
+function createStreamErrorMessage(model: Model<Api>, error: unknown): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error" as const,
+		errorMessage: error instanceof Error ? error.message : String(error),
+		timestamp: Date.now(),
+	};
+}
+
 export function withFastModePricing(
 	stream: AssistantMessageEventStream,
 	model: Model<Api>,
@@ -395,8 +417,12 @@ export function withFastModePricing(
 			}
 			out.end(await stream.result());
 		} catch (error) {
-			out.end();
-			throw error;
+			// pi-ai streams resolve result() only via end(message); surface the
+			// failure as an error event the way lazyStream does so consumers
+			// never hang on an unresolved result.
+			const message = createStreamErrorMessage(model, error);
+			out.push({ type: "error", reason: "error", error: message });
+			out.end(message);
 		}
 	})();
 	return out;

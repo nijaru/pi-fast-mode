@@ -351,6 +351,31 @@ describe("withFastModePricing", () => {
 		const raw = createAssistantMessageEventStream();
 		expect(withFastModePricing(raw, model as never, 1)).toBe(raw);
 	});
+
+	test("surfaces a mid-stream throw as an error event instead of hanging", async () => {
+		// A raw iterator that throws before any terminal event, mimicking an
+		// upstream failure pi-ai did not convert to an error event. The wrapper
+		// must still resolve result() with an AssistantMessage-shaped error.
+		const throwing = {
+			async *[Symbol.asyncIterator]() {
+				yield { type: "message_start" };
+				throw new Error("transport exploded");
+			},
+			result: () => new Promise<never>(() => {}),
+		};
+		const wrapped = withFastModePricing(throwing as never, model as never, 2.5);
+		const events: unknown[] = [];
+		const outcome = await Promise.race([
+			wrapped.result().then((message) => ({ resolved: message })),
+			new Promise((_, reject) => setTimeout(() => reject(new Error("HUNG")), 500)),
+		]).catch((error: Error) => ({ hung: error.message }));
+		for await (const event of wrapped) events.push(event);
+		const result = outcome as { resolved?: { errorMessage?: string; stopReason?: string }; hung?: string };
+		expect(result.hung).toBeUndefined();
+		expect(result.resolved?.errorMessage).toBe("transport exploded");
+		expect(result.resolved?.stopReason).toBe("error");
+		expect((events.at(-1) as { type: string }).type).toBe("error");
+	});
 });
 
 describe("extension registration", () => {
