@@ -2,7 +2,7 @@
 
 Toggle OpenAI Codex fast mode (`service_tier: "priority"`) in [pi](https://github.com/earendil-works/pi) with correct footer cost accounting.
 
-Fast mode runs supported GPT-6 Astra, GPT-5.6 / GPT-5.5 / GPT-5.4 models at roughly 1.5x speed, while charging a higher credit rate: 2.5x for GPT-6 Astra, GPT-5.6, and GPT-5.5, and 2x for GPT-5.4. This extension injects `service_tier: "priority"` into supported OpenAI Codex requests when enabled, and prices the displayed footer cost independently of pi's internals: on each terminal turn it recomputes cost from raw tokens × model rates × the official rate-card multiplier.
+Fast mode runs supported models at increased speed for a higher credit rate: 2.5x for GPT-6 Astra, GPT-5.6, and GPT-5.5, and 2x for GPT-5.4. OpenAI documents roughly 1.5x speed for the GPT-5.6/5.5/5.4 families; Astra's speedup is not separately published. This extension injects `service_tier: "priority"` into supported OpenAI Codex requests when enabled, and prices the displayed footer cost independently of pi's internals: on each terminal turn it recomputes cost from raw tokens × model rates × the official rate-card multiplier.
 
 ## Installation
 
@@ -21,7 +21,7 @@ Restart pi. Requires pi / `@earendil-works/pi-ai` >= 0.84.2.
 /fast status           show current state and the active model
 ```
 
-When enabled and the active model is supported, a compact footer status shows `⚡ FAST · $ 2.5×`; the active model is already shown elsewhere in the footer. Fast mode itself runs at roughly 1.5x speed. Requests only change for the allowlisted OpenAI Codex models; all other models and providers are untouched.
+When enabled and the active model is supported, a compact footer status shows `⚡ FAST · $ 2.5×`; the active model is already shown elsewhere in the footer. Requests only change for the allowlisted OpenAI Codex models; all other models and providers are untouched.
 
 ## Supported models
 
@@ -30,7 +30,7 @@ When enabled and the active model is supported, a compact footer status shows `�
 - `openai-codex/gpt-5.5`
 - `openai-codex/gpt-5.4`
 
-Credit multipliers (rate card): 2.5x for GPT-6 Astra, GPT-5.6, and GPT-5.5; 2x for GPT-5.4. GPT-5.4 mini is excluded from the defaults — OpenAI's Speed doc names only "GPT-5.6, GPT-5.5, and GPT-5.4" for fast mode without clarifying whether the 5.4 family includes mini. Add `openai-codex/gpt-5.4-mini` to `allowlist` if it works on your account.
+Credit multipliers (rate card): 2.5x for GPT-6 Astra, GPT-5.6, and GPT-5.5; 2x for GPT-5.4. OpenAI retired `gpt-5.4` and `gpt-5.4-mini` from Codex (ChatGPT sign-in) on August 31, 2026 — replace `gpt-5.4` with `gpt-5.6-terra` and `gpt-5.4-mini` with `gpt-5.6-luna`. `gpt-5.4` stays in the defaults at 2x for accounts and API-key paths still serving it; `gpt-5.4-mini` was never added because OpenAI never confirmed fast-mode support for it.
 
 Model selection per request: `(built-in defaults ∪ allowlist) − blocklist`; the model's API must also be spec'd (currently `openai-codex-responses` only). Edit `allowlist`/`blocklist` in the config to override the built-in defaults — add a custom `models.json` entry on a spec'd API, or block `gpt-5.5` for cost reasons. Only spec'd APIs are ever touched, so other APIs are never modified even if allowlisted.
 
