@@ -16,12 +16,12 @@
  * adds models (e.g. custom models.json entries, or future spec'd providers);
  * `blocklist` excludes models you do not want tiered.
  *
- * service_tier is an OpenAI Responses concept: only APIs with an ApiTierSpec
- * participate. Anthropic Messages, Google, and completions-style APIs have no
- * tier and are never touched, even if they appear in the allowlist.
+ * service_tier is not an OpenAI Responses-only concept (Anthropic and Gemini
+ * have per-request tiers now), but only APIs with an ApiTierSpec participate;
+ * un-spec'd APIs are never touched, even if they appear in the allowlist.
  *
  * Cost accounting: the displayed cost is recomputed from raw token counts ×
- * model.cost × the official rate-card multiplier (2.5x for GPT-5.6/5.5, 2x for
+ * model.cost × the official rate-card multiplier (2.5x for GPT-6 Astra and
  * GPT-5.4) on terminal stream events. Codex cache writes are excluded because
  * the Codex rate card does not charge for them. This is independent of pi-ai's
  * internal service-tier multiplier table, so it stays correct if pi-ai changes

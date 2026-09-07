@@ -10,7 +10,7 @@ Fast mode runs supported models at increased speed for a higher credit rate: 2.5
 pi install git:github.com/nijaru/pi-fast-mode
 ```
 
-Restart pi. Requires pi / `@earendil-works/pi-ai` >= 0.84.2.
+Restart pi. Requires pi / `@earendil-works/pi-ai` >= 0.84.2 — that is when `openai-codex-responses` began forwarding `serviceTier` to the request. GPT-6 Astra needs a newer pi-ai (0.85.1 ships it in the Codex catalog); on older runtimes it simply never matches the defaults.
 
 ## Usage
 
@@ -54,6 +54,8 @@ Fast-mode state is recorded in each session's history, like model changes. `/fas
   "blocklist": []
 }
 ```
+
+OpenAI renamed priority processing to Fast mode on July 30, 2026 and also accepts `service_tier: "fast"` on the wire. This extension keeps `serviceTier: "priority"` as its only accepted value — `"fast"` is not in the spec's supported tiers and would silently disable tiering if accepted.
 
 ## Adding another provider/API
 
