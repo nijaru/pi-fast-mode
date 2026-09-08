@@ -254,6 +254,24 @@ export function writeConfig(path: string, config: ConfigFile): void {
 	}
 }
 
+/**
+ * Config payload for persisting the `/fast` toggle. Unknown file keys are
+ * preserved verbatim so a toggle never strips keys this version does not
+ * model; normalization still happens on the read path. Falls back to the
+ * normalized config when the file is missing or unparseable.
+ */
+function configForWrite(path: string, active: boolean): ConfigFile {
+	try {
+		if (existsSync(path)) {
+			const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+			if (isRecord(parsed)) return { ...parsed, active } as ConfigFile;
+		}
+	} catch {
+		// Fall through to the normalized config below.
+	}
+	return { ...readConfig(path), active };
+}
+
 export function defaultResolvedConfig(cwd: string, home = homedir()): ResolvedConfig {
 	const paths = configPaths(cwd, home);
 	return {
@@ -360,7 +378,6 @@ export function applyFastModePricing(model: Model<Api>, usage: CostableUsage, mu
 	usage.cost.input = (usage.cost.input ?? 0) * multiplier;
 	usage.cost.output = (usage.cost.output ?? 0) * multiplier;
 	usage.cost.cacheRead = (usage.cost.cacheRead ?? 0) * multiplier;
-	usage.cost.cacheWrite = (usage.cost.cacheWrite ?? 0) * multiplier;
 	usage.cost.total = (usage.cost.input ?? 0) + (usage.cost.output ?? 0) + (usage.cost.cacheRead ?? 0) + (usage.cost.cacheWrite ?? 0);
 }
 
@@ -555,7 +572,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		refreshConfig(ctx);
 		state = { ...state, active };
 		appendSessionState();
-		writeConfig(config.configPath, { ...readConfig(config.configPath), active });
+		writeConfig(config.configPath, configForWrite(config.configPath, active));
 		refreshConfig(ctx);
 		updateStatus(ctx);
 		notifyStatus(ctx);

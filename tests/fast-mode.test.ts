@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -756,5 +756,83 @@ describe("statusText", () => {
 	});
 	test("stays empty when the configured tier is unsupported", () => {
 		expect(statusText(codexModel("gpt-5.6-luna"), { active: true, serviceTier: "flex" }, SPECS, filter)).toBe("");
+	});
+});
+
+describe("session_tree", () => {
+	test("restores the branch state", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-tree-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
+
+			const { ctx, events, statuses } = extensionHarness({
+				cwd: dir,
+			model: codexModel("gpt-5.6-luna"),
+				entries: [
+					{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
+				],
+			});
+			await events.session_tree?.({}, ctx);
+
+			expect(statuses).toEqual(["\u26a1 FAST \u00b7 $ 2.5\u00d7"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("resets to off when the branch has no saved state", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-tree-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeConfig(configPath, { active: true, persistState: true, serviceTier: "priority" });
+
+			const { ctx, events, statuses } = extensionHarness({
+				cwd: dir,
+			model: codexModel("gpt-5.6-luna"),
+				entries: [{ type: "message", message: { role: "user", content: "old" } }],
+			});
+			await events.session_tree?.({}, ctx);
+
+			expect(statuses).toEqual([undefined]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("config write preservation", () => {
+	test("/fast preserves unknown config keys", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-write-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeFileSync(
+				configPath,
+				JSON.stringify({
+					active: false,
+					persistState: false,
+					serviceTier: "priority",
+					note: "keep me",
+					allowlist: ["openai-codex/custom", "bogus"],
+				}),
+			);
+
+			const { ctx, events, commands } = extensionHarness({
+				cwd: dir,
+				model: codexModel("gpt-5.6-luna"),
+			});
+			await events.session_start?.({}, ctx);
+			await commands.fast?.handler("on", ctx);
+
+			const raw = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+			expect(raw.active).toBe(true);
+			expect(raw.note).toBe("keep me");
+			expect(raw.allowlist).toEqual(["openai-codex/custom", "bogus"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
