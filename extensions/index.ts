@@ -21,8 +21,8 @@
  * un-spec'd APIs are never touched, even if they appear in the allowlist.
  *
  * Cost accounting: the displayed cost is recomputed from raw token counts ×
- * model.cost × the official rate-card multiplier (2.5x for GPT-6 Astra and
- * GPT-5.4) on terminal stream events. Codex cache writes are excluded because
+ * model.cost × the official Codex rate-card multiplier on terminal stream
+ * events. Codex cache writes are excluded because
  * the Codex rate card does not charge for them. This is independent of pi-ai's
  * internal service-tier multiplier table, so it stays correct if pi-ai changes
  * its internals. Token counts are real and never modified.
@@ -83,7 +83,6 @@ export const DEFAULT_FAST_MODE_MODELS = [
 	"openai-codex/gpt-5.6-terra",
 	"openai-codex/gpt-5.6-luna",
 	"openai-codex/gpt-5.5",
-	"openai-codex/gpt-5.4",
 ] as const;
 
 /**
