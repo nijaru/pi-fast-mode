@@ -483,7 +483,7 @@ describe("extension registration", () => {
 			await commands.fast?.handler("on", ctx);
 			await commands.fast?.handler("status", ctx);
 
-			expect(statuses).toEqual([undefined, "⚡ FAST · $ 2.5×", "⚡ FAST · $ 2.5×"]);
+			expect(statuses).toEqual([undefined, "· ⚡ FAST · $ 2.5×", "· ⚡ FAST · $ 2.5×"]);
 			expect(notices.at(-1)?.message).toContain("Fast mode: priority service tier");
 			expect(readConfig(configPath)?.active).toBe(true);
 		} finally {
@@ -557,7 +557,7 @@ describe("extension registration", () => {
 			});
 			await events.session_start?.({ reason: "startup" }, ctx);
 
-			expect(statuses).toEqual(["\u26a1 FAST \u00b7 $ 2.5\u00d7"]);
+			expect(statuses).toEqual(["· \u26a1 FAST \u00b7 $ 2.5\u00d7"]);
 			expect(entries).toEqual([
 				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
@@ -626,7 +626,7 @@ describe("extension registration", () => {
 			});
 			await future.events.session_start?.({ reason: "startup" }, future.ctx);
 
-			expect(future.statuses).toEqual(["\u26a1 FAST \u00b7 $ 2.5\u00d7"]);
+			expect(future.statuses).toEqual(["· \u26a1 FAST \u00b7 $ 2.5\u00d7"]);
 			expect(future.entries.at(-1)).toEqual({
 				type: "custom",
 				customType: SESSION_STATE_TYPE,
@@ -654,7 +654,7 @@ describe("extension registration", () => {
 			});
 			await events.session_start?.({ reason: "resume" }, ctx);
 
-			expect(statuses).toEqual(["\u26a1 FAST \u00b7 $ 2.5\u00d7"]);
+			expect(statuses).toEqual(["· \u26a1 FAST \u00b7 $ 2.5\u00d7"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -779,7 +779,7 @@ describe("session_tree", () => {
 			});
 			await events.session_tree?.({}, ctx);
 
-			expect(statuses).toEqual(["\u26a1 FAST \u00b7 $ 2.5\u00d7"]);
+			expect(statuses).toEqual(["· \u26a1 FAST \u00b7 $ 2.5\u00d7"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

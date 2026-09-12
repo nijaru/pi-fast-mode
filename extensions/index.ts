@@ -532,7 +532,8 @@ export default function piFastMode(pi: ExtensionAPI): void {
 
 	function updateStatus(ctx: ExtensionContext): void {
 		const filter = buildModelFilter(SPECS, config);
-		ctx.ui.setStatus(STATUS_KEY, statusText(ctx.model, state, SPECS, filter) || undefined);
+		const text = statusText(ctx.model, state, SPECS, filter);
+		ctx.ui.setStatus(STATUS_KEY, text ? `· ${text}` : undefined);
 	}
 
 	function supportedListText(filter: ModelFilter): string {
