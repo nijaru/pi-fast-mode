@@ -170,6 +170,9 @@ describe("isModelAllowed", () => {
 	test("non-listed model is rejected", () => {
 		expect(isModelAllowed(codexModel("deepseek-v4-flash"), SPECS, filter)).toBe(false);
 	});
+	test("retired GPT-5.4 is not enabled by default", () => {
+		expect(isModelAllowed(codexModel("gpt-5.4"), SPECS, filter)).toBe(false);
+	});
 });
 
 describe("session state", () => {
