@@ -1,6 +1,6 @@
 {
   "name": "@nijaru/pi-fast-mode",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "description": "Toggle OpenAI Codex fast mode (priority service tier) in pi, with correct footer cost accounting.",
   "keywords": [
