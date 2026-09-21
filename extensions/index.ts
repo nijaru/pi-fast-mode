@@ -36,10 +36,10 @@ import type {
 	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
-	Context,
 	Model,
 	ModelThinkingLevel,
 	SimpleStreamOptions,
+	TranscriptContext,
 } from "@earendil-works/pi-ai";
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -100,7 +100,7 @@ export interface ApiTierSpec {
 	/** Invoke the raw pi-ai stream for this API (no tier applied). */
 	streamRaw: (
 		model: Model<Api>,
-		context: Context,
+		context: TranscriptContext,
 		options: CodexStreamOptions,
 	) => AssistantMessageEventStream;
 }
