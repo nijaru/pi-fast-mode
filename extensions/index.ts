@@ -28,7 +28,7 @@
  * its internals. Token counts are real and never modified.
  */
 
-import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { calculateCost, clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import type {
@@ -43,7 +43,6 @@ import type {
 } from "@earendil-works/pi-ai";
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export const SERVICE_TIERS = ["priority", "flex", "default", "auto", "scale"] as const;
@@ -215,10 +214,11 @@ export function parseModels(value: unknown): SupportedModel[] | undefined {
 		.filter((entry): entry is SupportedModel => entry !== undefined);
 }
 
-export function configPaths(cwd: string, home = homedir()): { project: string; global: string } {
+export function configPaths(cwd: string, agentDir = getAgentDir()): { project: string; global: string } {
 	return {
 		project: join(cwd, CONFIG_DIR_NAME, "extensions", CONFIG_BASENAME),
-		global: join(home, ".pi", "agent", "extensions", CONFIG_BASENAME),
+		// Honor PI_CODING_AGENT_DIR like the rest of Pi instead of assuming ~/.pi/agent.
+		global: join(agentDir, "extensions", CONFIG_BASENAME),
 	};
 }
 
@@ -271,8 +271,8 @@ function configForWrite(path: string, active: boolean): ConfigFile {
 	return { ...readConfig(path), active };
 }
 
-export function defaultResolvedConfig(cwd: string, home = homedir()): ResolvedConfig {
-	const paths = configPaths(cwd, home);
+export function defaultResolvedConfig(cwd: string, agentDir = getAgentDir()): ResolvedConfig {
+	const paths = configPaths(cwd, agentDir);
 	return {
 		configPath: paths.global,
 		persistState: DEFAULT_CONFIG.persistState,
@@ -283,8 +283,8 @@ export function defaultResolvedConfig(cwd: string, home = homedir()): ResolvedCo
 	};
 }
 
-export function resolveConfig(cwd: string, home = homedir(), trusted = true): ResolvedConfig {
-	const paths = configPaths(cwd, home);
+export function resolveConfig(cwd: string, agentDir = getAgentDir(), trusted = true): ResolvedConfig {
+	const paths = configPaths(cwd, agentDir);
 	const globalConfig = readConfig(paths.global) ?? {};
 	// An untrusted project must not steer tier eligibility or receive the /fast
 	// write. Callers pass the session's project-trust decision explicitly.
@@ -499,7 +499,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 	let state: RuntimeState = { active: config.active, serviceTier: config.serviceTier };
 
 	function refreshConfig(ctx: ExtensionContext): ResolvedConfig {
-		config = resolveConfig(getConfigCwd(ctx), homedir(), ctx.isProjectTrusted());
+		config = resolveConfig(getConfigCwd(ctx), getAgentDir(), ctx.isProjectTrusted());
 		return config;
 	}
 

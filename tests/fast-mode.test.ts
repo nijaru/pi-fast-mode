@@ -117,7 +117,7 @@ describe("config", () => {
 	test("defaults resolve with empty overrides", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-"));
 		try {
-			const config = resolveConfig(dir, join(dir, "home"));
+			const config = resolveConfig(dir, join(dir, "home", ".pi", "agent"));
 			expect(config.active).toBe(false);
 			expect(config.serviceTier).toBe("priority");
 			expect(config.allowlist).toEqual([]);
@@ -302,7 +302,7 @@ describe("config robustness", () => {
 				expect(read).toBeUndefined();
 			});
 			expect(warned.length).toBeGreaterThan(0);
-			const config = resolveConfig(dir, join(dir, "home"));
+			const config = resolveConfig(dir, join(dir, "home", ".pi", "agent"));
 			expect(config.active).toBe(false);
 			expect(config.allowlist).toEqual([]);
 			expect(config.blocklist).toEqual([]);
@@ -878,14 +878,14 @@ describe("project trust", () => {
 			const projectPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
 			mkdirSync(dirname(projectPath), { recursive: true });
 			writeConfig(projectPath, { active: true, blocklist: ["openai-codex/gpt-5.6-luna"] });
-			const home = join(dir, "home");
+			const agentDir = join(dir, "home", ".pi", "agent");
 
-			const untrusted = resolveConfig(dir, home, false);
+			const untrusted = resolveConfig(dir, agentDir, false);
 			expect(untrusted.active).toBe(false);
 			expect(untrusted.blocklist).toEqual([]);
-			expect(untrusted.configPath).toBe(join(home, ".pi", "agent", "extensions", CONFIG_BASENAME));
+			expect(untrusted.configPath).toBe(join(agentDir, "extensions", CONFIG_BASENAME));
 
-			const trusted = resolveConfig(dir, home, true);
+			const trusted = resolveConfig(dir, agentDir, true);
 			expect(trusted.active).toBe(true);
 			expect(trusted.configPath).toBe(projectPath);
 		} finally {
