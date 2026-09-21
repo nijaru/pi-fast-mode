@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import piFastMode, {
+	buildFullOpenAIOptions,
 	buildModelFilter,
 	applyFastModePricing,
 	fastModeMultiplier,
@@ -36,6 +37,7 @@ function extensionHarness(opts: {
 	entries?: unknown[];
 	model?: ReturnType<typeof codexModel> | undefined;
 	buildContextEntries?: () => unknown[] | undefined;
+	trusted?: boolean;
 }) {
 	const entries: unknown[] = opts.entries ?? [];
 	const events: Record<string, Function> = {};
@@ -58,6 +60,7 @@ function extensionHarness(opts: {
 	const ctx = {
 		cwd: opts.cwd,
 		model: opts.model,
+		isProjectTrusted: () => opts.trusted ?? true,
 		ui: {
 			setStatus(_key: string, value: string | undefined) {
 				statuses.push(value);
@@ -710,6 +713,7 @@ describe("extension registration", () => {
 			const ctx = {
 				cwd: dir,
 				model,
+				isProjectTrusted: () => true,
 				systemPrompt: "test",
 				messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
 				tools: [],
@@ -834,6 +838,56 @@ describe("config write preservation", () => {
 			expect(raw.active).toBe(true);
 			expect(raw.note).toBe("keep me");
 			expect(raw.allowlist).toEqual(["openai-codex/custom", "bogus"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("option shaping", () => {
+	const model = {
+		id: "gpt-6-astra",
+		provider: "openai-codex",
+		api: "openai-codex-responses" as const,
+		reasoning: true,
+		cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+	} as never;
+
+	// Pi's legacy provider composer routes both stream() and streamSimple() through
+	// the registered streamSimple, so an API-specific reasoningEffort must survive.
+	test("preserves an API-specific reasoningEffort when no neutral reasoning is set", () => {
+		expect(buildFullOpenAIOptions(model, { reasoningEffort: "high" } as never, undefined).reasoningEffort).toBe("high");
+	});
+
+	test("derives reasoningEffort from the provider-neutral reasoning option", () => {
+		expect(buildFullOpenAIOptions(model, { reasoning: "off" } as never, undefined).reasoningEffort).toBeUndefined();
+		expect(buildFullOpenAIOptions(model, { reasoningEffort: "high", reasoning: "off" } as never, undefined).reasoningEffort).toBeUndefined();
+	});
+
+	test("applies the service tier without dropping the reasoning effort", () => {
+		const options = buildFullOpenAIOptions(model, { reasoningEffort: "high" } as never, "priority");
+		expect(options.reasoningEffort).toBe("high");
+		expect(options.serviceTier).toBe("priority");
+	});
+});
+
+describe("project trust", () => {
+	test("an untrusted project cannot steer config or receive the /fast write", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-"));
+		try {
+			const projectPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(projectPath), { recursive: true });
+			writeConfig(projectPath, { active: true, blocklist: ["openai-codex/gpt-5.6-luna"] });
+			const home = join(dir, "home");
+
+			const untrusted = resolveConfig(dir, home, false);
+			expect(untrusted.active).toBe(false);
+			expect(untrusted.blocklist).toEqual([]);
+			expect(untrusted.configPath).toBe(join(home, ".pi", "agent", "extensions", CONFIG_BASENAME));
+
+			const trusted = resolveConfig(dir, home, true);
+			expect(trusted.active).toBe(true);
+			expect(trusted.configPath).toBe(projectPath);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

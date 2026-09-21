@@ -28,7 +28,7 @@
  * its internals. Token counts are real and never modified.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { calculateCost, clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import type {
@@ -217,7 +217,7 @@ export function parseModels(value: unknown): SupportedModel[] | undefined {
 
 export function configPaths(cwd: string, home = homedir()): { project: string; global: string } {
 	return {
-		project: join(cwd, ".pi", "extensions", CONFIG_BASENAME),
+		project: join(cwd, CONFIG_DIR_NAME, "extensions", CONFIG_BASENAME),
 		global: join(home, ".pi", "agent", "extensions", CONFIG_BASENAME),
 	};
 }
@@ -283,13 +283,15 @@ export function defaultResolvedConfig(cwd: string, home = homedir()): ResolvedCo
 	};
 }
 
-export function resolveConfig(cwd: string, home = homedir()): ResolvedConfig {
+export function resolveConfig(cwd: string, home = homedir(), trusted = true): ResolvedConfig {
 	const paths = configPaths(cwd, home);
 	const globalConfig = readConfig(paths.global) ?? {};
-	const projectConfig = readConfig(paths.project) ?? {};
+	// An untrusted project must not steer tier eligibility or receive the /fast
+	// write. Callers pass the session's project-trust decision explicitly.
+	const projectConfig = trusted ? readConfig(paths.project) ?? {} : {};
 	const merged: ConfigFile = { ...DEFAULT_CONFIG, ...globalConfig, ...projectConfig };
 	return {
-		configPath: existsSync(paths.project) ? paths.project : paths.global,
+		configPath: trusted && existsSync(paths.project) ? paths.project : paths.global,
 		persistState: merged.persistState ?? DEFAULT_CONFIG.persistState,
 		active: merged.active ?? DEFAULT_CONFIG.active,
 		serviceTier: merged.serviceTier ?? DEFAULT_CONFIG.serviceTier,
@@ -458,12 +460,15 @@ export function buildFullOpenAIOptions(
 	options: SimpleStreamOptions | undefined,
 	serviceTier: ServiceTier | undefined,
 ): OpenAIServiceTierOptions {
-	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
-	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
-	const result: OpenAIServiceTierOptions = {
-		...options,
-		reasoningEffort,
-	};
+	const result: OpenAIServiceTierOptions = { ...options };
+	// Pi's legacy provider composer routes both `stream()` and `streamSimple()`
+	// through this wrapper, so preserve an API-specific `reasoningEffort` from a
+	// `stream()` caller and only derive the effort from the provider-neutral
+	// `reasoning` option when it is present.
+	if (options?.reasoning !== undefined) {
+		const clampedReasoning = clampThinkingLevel(model, options.reasoning);
+		result.reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
+	}
 	if (serviceTier) result.serviceTier = serviceTier;
 	return result;
 }
@@ -494,7 +499,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 	let state: RuntimeState = { active: config.active, serviceTier: config.serviceTier };
 
 	function refreshConfig(ctx: ExtensionContext): ResolvedConfig {
-		config = resolveConfig(getConfigCwd(ctx));
+		config = resolveConfig(getConfigCwd(ctx), homedir(), ctx.isProjectTrusted());
 		return config;
 	}
 
