@@ -10,7 +10,7 @@ Fast mode runs currently supported Codex models at increased speed for a higher 
 pi install npm:@nijaru/pi-fast-mode
 ```
 
-Restart pi. Requires pi / `@earendil-works/pi-ai` >= 0.84.2 — that is when `openai-codex-responses` began forwarding `serviceTier` to the request. GPT-6 Astra needs a newer pi-ai (0.85.1 ships it in the Codex catalog); on older runtimes it simply never matches the defaults.
+Restart pi. Development checks target Pi 1.0.2. Requires pi / `@earendil-works/pi-ai` >= 0.84.2 — that is when `openai-codex-responses` began forwarding `serviceTier` to the request. GPT-6 Astra needs a newer pi-ai (0.85.1 ships it in the Codex catalog); on older runtimes it simply never matches the defaults.
 
 ## Usage
 
@@ -42,7 +42,7 @@ Config resolves project-over-global and provides defaults for new sessions:
 - global: `~/.pi/agent/extensions/pi-fast-mode.json`
 - project: `.pi/extensions/pi-fast-mode.json`
 
-Fast-mode state is recorded in each session's history, like model changes. `/fast`, `/fast on`, and `/fast off` update the current session and the `active` default for future new sessions. Resuming a session restores its own state, so an older session can remain independent of the latest default. Sessions created before this state was recorded default to the current `active` setting and are given an explicit state when opened. The command writes to the project config when present, otherwise the global config. With `persistState: false`, saved session state is ignored, but the current setting still updates the default for new sessions.
+Fast-mode state is recorded in each session's history, like model changes. `/fast`, `/fast on`, and `/fast off` update the current session and the `active` default for future new sessions. Resuming a session restores its own state, so an older session can remain independent of the latest default. Existing sessions without recorded state stay off and are given an explicit state when opened; only new or empty sessions inherit the current `active` default. The command writes to the project config when present, otherwise the global config. With `persistState: false`, saved session state is ignored, but the current setting still updates the default for new sessions.
 
 ```json
 {

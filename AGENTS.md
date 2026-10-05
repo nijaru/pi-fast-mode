@@ -6,7 +6,7 @@ Fast mode serves the currently supported GPT-6 Astra / GPT-5.6 / GPT-5.5 Codex m
 
 ## Stack
 
-TypeScript, Bun. Pi extension API (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`).
+TypeScript, Bun. Development checks target Pi 1.0.2; the minimum pi-ai runtime remains 0.84.2. Pi extension API (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`).
 
 ## Testing
 
