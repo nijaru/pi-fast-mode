@@ -10,7 +10,7 @@ Fast mode runs currently supported Codex models at increased speed for a higher 
 pi install npm:@nijaru/pi-fast-mode
 ```
 
-Restart pi. Development checks target Pi 1.0.2. Requires pi / `@earendil-works/pi-ai` >= 0.84.2 — that is when `openai-codex-responses` began forwarding `serviceTier` to the request. GPT-6 Astra needs a newer pi-ai (0.85.1 ships it in the Codex catalog); on older runtimes it simply never matches the defaults.
+Restart pi. Development checks target Pi 1.1.0. Requires pi / `@earendil-works/pi-ai` >= 0.84.2 — that is when `openai-codex-responses` began forwarding `serviceTier` to the request. GPT-6 Astra needs a newer pi-ai (0.85.1 ships it in the Codex catalog); on older runtimes it simply never matches the defaults.
 
 ## Usage
 
