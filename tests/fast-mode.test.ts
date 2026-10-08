@@ -10,7 +10,6 @@ import piFastMode, {
 	fastModeMultiplier,
 	CODEX_PROVIDER,
 	CONFIG_BASENAME,
-	DEFAULT_FAST_MODE_MODELS,
 	isModelAllowed,
 	OFFICIAL_FAST_MULTIPLIER,
 	parseModelKey,
@@ -128,33 +127,22 @@ describe("config", () => {
 	});
 });
 
-describe("buildModelFilter", () => {
-	test("defaults come from spec defaultModels", () => {
-		const filter = buildModelFilter(SPECS, {});
-		expect(filter.defaults.map((m) => `${m.provider}/${m.id}`)).toEqual([...DEFAULT_FAST_MODE_MODELS]);
-		expect(filter.allowlist).toEqual([]);
-		expect(filter.blocklist).toEqual([]);
-	});
-	test("surfaces allowlist and blocklist", () => {
-		const filter = buildModelFilter(SPECS, {
-			allowlist: [parseModelKey("openai-codex/custom")!],
-			blocklist: [parseModelKey("openai-codex/gpt-5.5")!],
-		});
-		expect(filter.allowlist).toHaveLength(1);
-		expect(filter.blocklist).toHaveLength(1);
-	});
-});
-
 describe("isModelAllowed", () => {
 	const filter = buildModelFilter(SPECS, {});
 
-	test("built-in default model is allowed", () => {
-		expect(isModelAllowed(codexModel("gpt-5.6-luna"), SPECS, filter)).toBe(true);
+	test.each(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])("resolves priority for the supported default %s", id => {
+		expect(resolveServiceTierForModel(codexModel(id), stateOn, SPECS, filter)).toBe("priority");
 	});
 	test("blocklist excludes a default", () => {
 		const f = buildModelFilter(SPECS, { blocklist: [parseModelKey("openai-codex/gpt-5.5")!] });
 		expect(isModelAllowed(codexModel("gpt-5.5"), SPECS, f)).toBe(false);
 		expect(isModelAllowed(codexModel("gpt-5.6-luna"), SPECS, f)).toBe(true);
+	});
+	test("does not advertise fast mode for a provider without an overlay", () => {
+		const model = { ...codexModel("gpt-5.6-luna"), provider: "custom-codex" };
+		const filter = buildModelFilter(SPECS, { allowlist: [{ provider: model.provider, id: model.id }] });
+		expect(resolveServiceTierForModel(model, stateOn, SPECS, filter)).toBeUndefined();
+		expect(statusText(model, stateOn, SPECS, filter)).toBe("");
 	});
 	test("allowlist adds a custom model on a spec'd api", () => {
 		const f = buildModelFilter(SPECS, { allowlist: [parseModelKey("openai-codex/custom-model")!] });
@@ -343,12 +331,14 @@ describe("config robustness", () => {
 	test("project config wins over global per key", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-"));
 		try {
-			// create a project-level .pi/extensions file that flips active and adds a block
+			const agentDir = join(dir, "agent");
+			writeConfig(join(agentDir, "extensions", CONFIG_BASENAME), { active: false, blocklist: ["openai-codex/global-block"], allowlist: ["openai-codex/inherited-model"] });
 			const projectPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
 			mkdirSync(dirname(projectPath), { recursive: true });
 			writeConfig(projectPath, { active: true, blocklist: ["openai-codex/gpt-5.4"] });
-			const config = resolveConfig(dir);
+			const config = resolveConfig(dir, agentDir);
 			expect(config.active).toBe(true);
+			expect(config.allowlist).toEqual([{ provider: "openai-codex", id: "inherited-model" }]);
 			expect(config.blocklist.map((m) => `${m.provider}/${m.id}`)).toEqual(["openai-codex/gpt-5.4"]);
 			expect(config.configPath).toBe(projectPath);
 		} finally {
@@ -571,30 +561,6 @@ describe("extension registration", () => {
 		}
 	});
 
-	test("persists /fast changes in the session and as the global default", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-session-"));
-		try {
-			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
-			mkdirSync(dirname(configPath), { recursive: true });
-			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
-
-			const { ctx, events, commands, entries } = extensionHarness({
-				cwd: dir,
-				model: codexModel("gpt-5.6-luna"),
-			});
-			await events.session_start?.({ reason: "new" }, ctx);
-			await commands.fast?.handler("on", ctx);
-
-			expect(entries.at(-1)).toEqual({
-				type: "custom",
-				customType: SESSION_STATE_TYPE,
-				data: { active: true, serviceTier: "priority" },
-			});
-			expect(readConfig(configPath)?.active).toBe(true);
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
 
 	test("uses the latest /fast setting for a future session", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-default-"));

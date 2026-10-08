@@ -321,14 +321,14 @@ export function buildModelFilter(specs: readonly ApiTierSpec[], config: {
 	return { defaults, allowlist: config.allowlist ?? [], blocklist: config.blocklist ?? [] };
 }
 
-/** True when the model may be tiered: its API is spec'd and it survives the default/allow/block override. */
+/** Only models dispatched through an installed provider/API overlay can be tiered. */
 export function isModelAllowed(
 	model: Pick<Model<Api>, "provider" | "id" | "api"> | undefined,
 	specs: readonly ApiTierSpec[],
 	filter: ModelFilter,
 ): boolean {
 	if (!model) return false;
-	if (getModelsForApi(specs, model.api).length === 0) return false;
+	if (!specs.some(spec => spec.provider === model.provider && spec.api === model.api && spec.supportedTiers.length > 0)) return false;
 	if (!contains(filter.defaults, model) && !contains(filter.allowlist, model)) return false;
 	if (contains(filter.blocklist, model)) return false;
 	return true;

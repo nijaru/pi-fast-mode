@@ -31,7 +31,7 @@ When enabled and the active model is supported, a compact footer status shows `�
 
 Credit multipliers (rate card): 2.5x for GPT-6 Astra, GPT-5.6, and GPT-5.5. OpenAI retired `gpt-5.4` and `gpt-5.4-mini` from Codex (ChatGPT sign-in) on August 31, 2026, so `gpt-5.4` is no longer a built-in default. Its historical 2x multiplier remains available for an explicit custom allowlist if a compatible endpoint still serves it.
 
-Model selection per request: `(built-in defaults ∪ allowlist) − blocklist`; the model's API must also be spec'd (currently `openai-codex-responses` only). Edit `allowlist`/`blocklist` in the config to override the built-in defaults — add a custom `models.json` entry on a spec'd API, or block `gpt-5.5` for cost reasons. Only spec'd APIs are ever touched, so other APIs are never modified even if allowlisted.
+Model selection per request: `(built-in defaults ∪ allowlist) − blocklist`; the model must also use an overlaid provider/API pair (currently `openai-codex` with `openai-codex-responses` only). Allowlisting a model on a custom provider does not install an overlay for it. Edit `allowlist`/`blocklist` in the config to override the built-in defaults — add a custom `models.json` entry on a spec'd API, or block `gpt-5.5` for cost reasons. Only spec'd APIs are ever touched, so other APIs are never modified even if allowlisted.
 
 Other providers expose speed differently and are deliberately out of scope: Anthropic fast mode and Gemini priority inference are per-request tiers but need response-driven or rate-card pricing pi-ai does not surface yet (pi issue [#1381](https://github.com/earendil-works/pi/issues/1381)); OpenRouter and xAI ship speed as separate model variants (`:nitro`, Grok Fast), which need no extension.
 
