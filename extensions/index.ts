@@ -16,6 +16,12 @@
  * adds models (e.g. custom models.json entries, or future spec'd providers);
  * `blocklist` excludes models you do not want tiered.
  *
+ * Pricing is fail-closed. Fast mode applies only when the model has an
+ * established fast-mode rate: a verified built-in rate-card entry or an
+ * explicit `multipliers` config entry (`provider/model` → finite positive
+ * multiplier). A model without one is never tiered and never priced from a
+ * guessed multiplier; `/fast status` explains how to establish the rate.
+ *
  * service_tier is not an OpenAI Responses-only concept (Anthropic and Gemini
  * have per-request tiers now), but only APIs with an ApiTierSpec participate;
  * un-spec'd APIs are never touched, even if they appear in the allowlist.
@@ -65,19 +71,26 @@ export const STATUS_KEY = "fast-mode";
 export const COMMAND_FAST = "fast";
 export const SESSION_STATE_TYPE = "fast-mode-state";
 
-/** Official Codex fast-mode credit multipliers per model (OpenAI Codex rate card). */
+/**
+ * Verified Codex fast-mode credit multipliers (OpenAI Codex rate card,
+ * included-subscription basis), keyed `provider/model` like the configured
+ * `multipliers` map. Retired `gpt-5.4` keeps its historical verified rate for
+ * explicit allowlisting; nothing outside this table is ever priced by guess.
+ */
 export const OFFICIAL_FAST_MULTIPLIER: Record<string, number> = {
-	"gpt-6-astra": 2.5,
-	"gpt-5.6-sol": 2.5,
-	"gpt-5.6-terra": 2.5,
-	"gpt-5.6-luna": 2.5,
-	"gpt-5.5": 2.5,
-	"gpt-5.4": 2,
+	"openai-codex/gpt-6-astra": 2.5,
+	"openai-codex/gpt-6.1-sol": 2.5,
+	"openai-codex/gpt-5.6-sol": 2.5,
+	"openai-codex/gpt-5.6-terra": 2.5,
+	"openai-codex/gpt-5.6-luna": 2.5,
+	"openai-codex/gpt-5.5": 2.5,
+	"openai-codex/gpt-5.4": 2,
 };
 
 /** Built-in supported models for the OpenAI Codex provider. */
 export const DEFAULT_FAST_MODE_MODELS = [
 	"openai-codex/gpt-6-astra",
+	"openai-codex/gpt-6.1-sol",
 	"openai-codex/gpt-5.6-sol",
 	"openai-codex/gpt-5.6-terra",
 	"openai-codex/gpt-5.6-luna",
@@ -120,6 +133,9 @@ export interface SupportedModel {
 	id: string;
 }
 
+/** Configured fast-mode rates: `provider/model` → finite positive multiplier. */
+export type Multipliers = Record<string, number>;
+
 export interface ConfigFile {
 	/** Record /fast changes in each session's history. */
 	persistState?: boolean;
@@ -128,6 +144,8 @@ export interface ConfigFile {
 	serviceTier?: ServiceTier;
 	allowlist?: string[];
 	blocklist?: string[];
+	/** Explicit fast-mode rates for models the built-in rate card does not cover. */
+	multipliers?: Multipliers;
 }
 
 export interface ResolvedConfig {
@@ -137,6 +155,7 @@ export interface ResolvedConfig {
 	serviceTier: ServiceTier;
 	allowlist: SupportedModel[];
 	blocklist: SupportedModel[];
+	multipliers: Multipliers;
 }
 
 export interface RuntimeState {
@@ -144,21 +163,23 @@ export interface RuntimeState {
 	serviceTier: ServiceTier;
 }
 
-/** The model membership override applied per request. */
-export interface ModelFilter {
+/** Per-request model membership and fast-mode rate policy. */
+export interface FastModePolicy {
 	defaults: readonly SupportedModel[];
 	allowlist: readonly SupportedModel[];
 	blocklist: readonly SupportedModel[];
+	multipliers: Multipliers;
 }
 
 type OpenAIServiceTierOptions = CodexStreamOptions;
 
-const DEFAULT_CONFIG: Required<Pick<ConfigFile, "persistState" | "active" | "serviceTier" | "allowlist" | "blocklist">> = {
+const DEFAULT_CONFIG: Required<Pick<ConfigFile, "persistState" | "active" | "serviceTier" | "allowlist" | "blocklist" | "multipliers">> = {
 	persistState: true,
 	active: false,
 	serviceTier: "priority",
 	allowlist: [],
 	blocklist: [],
+	multipliers: {},
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -214,6 +235,21 @@ export function parseModels(value: unknown): SupportedModel[] | undefined {
 		.filter((entry): entry is SupportedModel => entry !== undefined);
 }
 
+/**
+ * Normalize a configured `multipliers` map: `provider/model` keys with finite
+ * positive multipliers only. Anything else is dropped rather than guessed at.
+ */
+export function parseMultipliers(value: unknown): Multipliers | undefined {
+	if (!isRecord(value)) return undefined;
+	const multipliers: Multipliers = {};
+	for (const [key, multiplier] of Object.entries(value)) {
+		const model = parseModelKey(key);
+		if (!model || typeof multiplier !== "number" || !Number.isFinite(multiplier) || multiplier <= 0) continue;
+		multipliers[`${model.provider}/${model.id}`] = multiplier;
+	}
+	return multipliers;
+}
+
 export function configPaths(cwd: string, agentDir = getAgentDir()): { project: string; global: string } {
 	return {
 		project: join(cwd, CONFIG_DIR_NAME, "extensions", CONFIG_BASENAME),
@@ -235,6 +271,8 @@ export function readConfig(path: string): ConfigFile | undefined {
 		if (allowlist !== undefined) config.allowlist = allowlist;
 		const blocklist = normalizeModelKeys(parsed.blocklist);
 		if (blocklist !== undefined) config.blocklist = blocklist;
+		const multipliers = parseMultipliers(parsed.multipliers);
+		if (multipliers !== undefined) config.multipliers = multipliers;
 		return config;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -280,6 +318,7 @@ export function defaultResolvedConfig(cwd: string, agentDir = getAgentDir()): Re
 		serviceTier: DEFAULT_CONFIG.serviceTier,
 		allowlist: [],
 		blocklist: [],
+		multipliers: {},
 	};
 }
 
@@ -297,6 +336,7 @@ export function resolveConfig(cwd: string, agentDir = getAgentDir(), trusted = t
 		serviceTier: merged.serviceTier ?? DEFAULT_CONFIG.serviceTier,
 		allowlist: parseModels(merged.allowlist) ?? [],
 		blocklist: parseModels(merged.blocklist) ?? [],
+		multipliers: parseMultipliers(merged.multipliers) ?? {},
 	};
 }
 
@@ -309,50 +349,77 @@ function contains(list: readonly SupportedModel[], model: Pick<Model<Api>, "prov
 	return list.some((entry) => entry.provider === model.provider && entry.id === model.id);
 }
 
-/** Merge every spec's built-in defaults into one filter list. */
-export function buildModelFilter(specs: readonly ApiTierSpec[], config: {
+/** Merge every spec's built-in defaults and the configured rates into one policy. */
+export function buildFastModePolicy(specs: readonly ApiTierSpec[], config: {
 	allowlist?: readonly SupportedModel[];
 	blocklist?: readonly SupportedModel[];
-}): ModelFilter {
+	multipliers?: Multipliers;
+}): FastModePolicy {
 	const defaults = specs
 		.flatMap((spec) => spec.defaultModels)
 		.map((key) => parseModelKey(key))
 		.filter((entry): entry is SupportedModel => entry !== undefined);
-	return { defaults, allowlist: config.allowlist ?? [], blocklist: config.blocklist ?? [] };
+	return {
+		defaults,
+		allowlist: config.allowlist ?? [],
+		blocklist: config.blocklist ?? [],
+		multipliers: config.multipliers ?? {},
+	};
 }
 
 /** Only models dispatched through an installed provider/API overlay can be tiered. */
 export function isModelAllowed(
 	model: Pick<Model<Api>, "provider" | "id" | "api"> | undefined,
 	specs: readonly ApiTierSpec[],
-	filter: ModelFilter,
+	policy: FastModePolicy,
 ): boolean {
 	if (!model) return false;
 	if (!specs.some(spec => spec.provider === model.provider && spec.api === model.api && spec.supportedTiers.length > 0)) return false;
-	if (!contains(filter.defaults, model) && !contains(filter.allowlist, model)) return false;
-	if (contains(filter.blocklist, model)) return false;
+	if (!contains(policy.defaults, model) && !contains(policy.allowlist, model)) return false;
+	if (contains(policy.blocklist, model)) return false;
 	return true;
 }
 
-/** The tier to send for this model, or undefined when fast mode should not apply. */
-export function resolveServiceTierForModel(
-	model: Pick<Model<Api>, "provider" | "id" | "api"> | undefined,
-	state: RuntimeState,
-	specs: readonly ApiTierSpec[],
-	filter: ModelFilter,
-): ServiceTier | undefined {
-	if (!state.active) return undefined;
-	if (!isModelAllowed(model, specs, filter)) return undefined;
-	const tiers = getModelsForApi(specs, model?.api);
-	return tiers.includes(state.serviceTier) ? state.serviceTier : undefined;
+/**
+ * Established fast-mode rate for a model: an explicit `multipliers` config
+ * entry (which may override the built-in card) or a verified built-in
+ * rate-card entry. Undefined when no rate is established — callers must fail
+ * closed rather than guess a multiplier.
+ */
+export function fastMultiplierFor(
+	model: Pick<Model<Api>, "provider" | "id"> | undefined,
+	policy: FastModePolicy,
+): number | undefined {
+	if (!model) return undefined;
+	const key = `${model.provider}/${model.id}`;
+	return policy.multipliers[key] ?? OFFICIAL_FAST_MULTIPLIER[key];
+}
+
+/** Fast mode for one model: the tier to request and the rate to charge it at. */
+export interface FastModeResolution {
+	tier: ServiceTier;
+	/** Established fast-mode rate (built-in rate card or configured), never a guess. */
+	multiplier: number;
 }
 
 /**
- * Official fast-mode credit multiplier for a model, from the OpenAI Codex rate
- * card. Falls back to pi-ai's 2x default for models without a published rate.
+ * Resolve fast mode for this model, or undefined when it must not apply.
+ * Fails closed: the tier is requested and priced only when the model is a
+ * listed, unblocked member of a spec'd provider/API with an established
+ * fast-mode rate.
  */
-export function fastModeMultiplier(modelId: string): number {
-	return OFFICIAL_FAST_MULTIPLIER[modelId] ?? 2;
+export function resolveFastMode(
+	model: Pick<Model<Api>, "provider" | "id" | "api"> | undefined,
+	state: RuntimeState,
+	specs: readonly ApiTierSpec[],
+	policy: FastModePolicy,
+): FastModeResolution | undefined {
+	if (!state.active || !model) return undefined;
+	if (!isModelAllowed(model, specs, policy)) return undefined;
+	const multiplier = fastMultiplierFor(model, policy);
+	if (multiplier === undefined) return undefined;
+	const tiers = getModelsForApi(specs, model.api);
+	return tiers.includes(state.serviceTier) ? { tier: state.serviceTier, multiplier } : undefined;
 }
 
 interface CostableUsage {
@@ -481,17 +548,16 @@ export function statusText(
 	model: Pick<Model<Api>, "provider" | "id" | "api"> | undefined,
 	state: RuntimeState,
 	specs: readonly ApiTierSpec[],
-	filter: ModelFilter,
+	policy: FastModePolicy,
 ): string {
-	const tier = resolveServiceTierForModel(model, state, specs, filter);
-	if (tier && model) {
-		const mult = OFFICIAL_FAST_MULTIPLIER[model.id];
-		return mult !== undefined ? `⚡ FAST · $ ${mult}×` : "⚡ FAST";
+	const resolution = resolveFastMode(model, state, specs, policy);
+	if (!resolution) {
+		// Keep the footer quiet for inactive or non-tierable models. The active model
+		// and provider already identify the current context, while /fast status can
+		// still explain why fast mode did not apply when explicitly requested.
+		return "";
 	}
-	// Keep the footer quiet for inactive or non-tierable models. The active model
-	// and provider already identify the current context, while /fast status can
-	// still explain why fast mode did not apply when explicitly requested.
-	return "";
+	return `⚡ FAST · $ ${resolution.multiplier}×`;
 }
 
 export default function piFastMode(pi: ExtensionAPI): void {
@@ -536,23 +602,26 @@ export default function piFastMode(pi: ExtensionAPI): void {
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
-		const filter = buildModelFilter(SPECS, config);
-		const text = statusText(ctx.model, state, SPECS, filter);
+		const policy = buildFastModePolicy(SPECS, config);
+		const text = statusText(ctx.model, state, SPECS, policy);
 		ctx.ui.setStatus(STATUS_KEY, text ? `· ${text}` : undefined);
 	}
 
-	function supportedListText(filter: ModelFilter): string {
-		const all = [...filter.defaults, ...filter.allowlist, ...filter.blocklist];
+	function supportedListText(policy: FastModePolicy): string {
+		const all = [...policy.defaults, ...policy.allowlist, ...policy.blocklist];
 		const keys = [...new Set(all.map((model) => `${model.provider}/${model.id}`))];
 		return keys.join(", ") || "none";
 	}
 
 	function notifyStatus(ctx: ExtensionContext): void {
-		const filter = buildModelFilter(SPECS, config);
-		const tier = resolveServiceTierForModel(ctx.model, state, SPECS, filter);
+		const policy = buildFastModePolicy(SPECS, config);
+		const resolution = resolveFastMode(ctx.model, state, SPECS, policy);
 		const modelKey = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
-		if (tier) {
-			ctx.ui.notify(`Fast mode: ${tier} service tier for ${modelKey}. Cost accounting includes the priority multiplier.`, "info");
+		if (resolution) {
+			ctx.ui.notify(
+				`Fast mode: ${resolution.tier} service tier for ${modelKey}. Cost accounting applies the ${resolution.multiplier}× fast-mode multiplier.`,
+				"info",
+			);
 			return;
 		}
 		if (state.active) {
@@ -564,8 +633,15 @@ export default function piFastMode(pi: ExtensionAPI): void {
 				);
 				return;
 			}
+			if (ctx.model && isModelAllowed(ctx.model, SPECS, policy) && fastMultiplierFor(ctx.model, policy) === undefined) {
+				ctx.ui.notify(
+					`Fast mode is on, but ${modelKey} has no established fast-mode rate, so priority was not requested and cost would be guesswork. Verify the model's fast-mode multiplier on the OpenAI Codex rate card, then set "multipliers": { "${modelKey}": <multiplier> } in ${config.configPath}.`,
+					"warning",
+				);
+				return;
+			}
 			ctx.ui.notify(
-				`Fast mode is on, but ${modelKey} is not tierable (missing API spec, not on the default/allowlist, or blocked). Mentioned models: ${supportedListText(filter)}.`,
+				`Fast mode is on, but ${modelKey} is not tierable (missing API spec, not on the default/allowlist, or blocked). Mentioned models: ${supportedListText(policy)}.`,
 				"warning",
 			);
 			return;
@@ -588,11 +664,11 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		pi.registerProvider(spec.provider, {
 			api: spec.api,
 			streamSimple(model, context, options) {
-				const filter = buildModelFilter(SPECS, config);
-				const serviceTier = resolveServiceTierForModel(model, state, SPECS, filter);
-				const stream = spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, serviceTier));
-				if (!serviceTier) return stream;
-				return withFastModePricing(stream, model, fastModeMultiplier(model.id));
+				const policy = buildFastModePolicy(SPECS, config);
+				const resolution = resolveFastMode(model, state, SPECS, policy);
+				const stream = spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, resolution?.tier));
+				if (!resolution) return stream;
+				return withFastModePricing(stream, model, resolution.multiplier);
 			},
 		});
 	}

@@ -5,17 +5,18 @@ import { describe, expect, test } from "bun:test";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import piFastMode, {
 	buildFullOpenAIOptions,
-	buildModelFilter,
+	buildFastModePolicy,
 	applyFastModePricing,
-	fastModeMultiplier,
+	fastMultiplierFor,
 	CODEX_PROVIDER,
 	CONFIG_BASENAME,
 	isModelAllowed,
 	OFFICIAL_FAST_MULTIPLIER,
 	parseModelKey,
+	parseMultipliers,
 	readConfig,
 	resolveConfig,
-	resolveServiceTierForModel,
+	resolveFastMode,
 	readSessionState,
 	SESSION_STATE_TYPE,
 	SPECS,
@@ -102,12 +103,14 @@ describe("config", () => {
 				serviceTier: "priority",
 				allowlist: ["openai-codex/custom-model"],
 				blocklist: ["openai-codex/gpt-5.5"],
+				multipliers: { "openai-codex/custom-model": 2.5 },
 			});
 			const read = readConfig(path);
 			expect(read?.active).toBe(true);
 			expect(read?.serviceTier).toBe("priority");
 			expect(read?.allowlist).toEqual(["openai-codex/custom-model"]);
 			expect(read?.blocklist).toEqual(["openai-codex/gpt-5.5"]);
+			expect(read?.multipliers).toEqual({ "openai-codex/custom-model": 2.5 });
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -121,6 +124,7 @@ describe("config", () => {
 			expect(config.serviceTier).toBe("priority");
 			expect(config.allowlist).toEqual([]);
 			expect(config.blocklist).toEqual([]);
+			expect(config.multipliers).toEqual({});
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -128,41 +132,41 @@ describe("config", () => {
 });
 
 describe("isModelAllowed", () => {
-	const filter = buildModelFilter(SPECS, {});
+	const policy = buildFastModePolicy(SPECS, {});
 
-	test.each(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])("resolves priority for the supported default %s", id => {
-		expect(resolveServiceTierForModel(codexModel(id), stateOn, SPECS, filter)).toBe("priority");
+	test.each(["gpt-6-astra", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])("resolves priority for the supported default %s", id => {
+		expect(resolveFastMode(codexModel(id), stateOn, SPECS, policy)?.tier).toBe("priority");
 	});
 	test("blocklist excludes a default", () => {
-		const f = buildModelFilter(SPECS, { blocklist: [parseModelKey("openai-codex/gpt-5.5")!] });
+		const f = buildFastModePolicy(SPECS, { blocklist: [parseModelKey("openai-codex/gpt-5.5")!] });
 		expect(isModelAllowed(codexModel("gpt-5.5"), SPECS, f)).toBe(false);
 		expect(isModelAllowed(codexModel("gpt-5.6-luna"), SPECS, f)).toBe(true);
 	});
 	test("does not advertise fast mode for a provider without an overlay", () => {
 		const model = { ...codexModel("gpt-5.6-luna"), provider: "custom-codex" };
-		const filter = buildModelFilter(SPECS, { allowlist: [{ provider: model.provider, id: model.id }] });
-		expect(resolveServiceTierForModel(model, stateOn, SPECS, filter)).toBeUndefined();
-		expect(statusText(model, stateOn, SPECS, filter)).toBe("");
+		const policy = buildFastModePolicy(SPECS, { allowlist: [{ provider: model.provider, id: model.id }] });
+		expect(resolveFastMode(model, stateOn, SPECS, policy)).toBeUndefined();
+		expect(statusText(model, stateOn, SPECS, policy)).toBe("");
 	});
 	test("allowlist adds a custom model on a spec'd api", () => {
-		const f = buildModelFilter(SPECS, { allowlist: [parseModelKey("openai-codex/custom-model")!] });
+		const f = buildFastModePolicy(SPECS, { allowlist: [parseModelKey("openai-codex/custom-model")!] });
 		expect(isModelAllowed(codexModel("custom-model"), SPECS, f)).toBe(true);
 	});
 	test("blocklist wins over allowlist", () => {
-		const f = buildModelFilter(SPECS, {
+		const f = buildFastModePolicy(SPECS, {
 			allowlist: [parseModelKey("openai-codex/contested")!],
 			blocklist: [parseModelKey("openai-codex/contested")!],
 		});
 		expect(isModelAllowed(codexModel("contested"), SPECS, f)).toBe(false);
 	});
 	test("allowed model on wrong api is rejected", () => {
-		expect(isModelAllowed({ ...codexModel("gpt-5.6-luna"), api: "anthropic-messages" }, SPECS, filter)).toBe(false);
+		expect(isModelAllowed({ ...codexModel("gpt-5.6-luna"), api: "anthropic-messages" }, SPECS, policy)).toBe(false);
 	});
 	test("non-listed model is rejected", () => {
-		expect(isModelAllowed(codexModel("deepseek-v4-flash"), SPECS, filter)).toBe(false);
+		expect(isModelAllowed(codexModel("deepseek-v4-flash"), SPECS, policy)).toBe(false);
 	});
 	test("retired GPT-5.4 is not enabled by default", () => {
-		expect(isModelAllowed(codexModel("gpt-5.4"), SPECS, filter)).toBe(false);
+		expect(isModelAllowed(codexModel("gpt-5.4"), SPECS, policy)).toBe(false);
 	});
 });
 
@@ -186,44 +190,98 @@ describe("session state", () => {
 	});
 });
 
-describe("resolveServiceTierForModel", () => {
-	const filter = buildModelFilter(SPECS, {});
+describe("resolveFastMode", () => {
+	const policy = buildFastModePolicy(SPECS, {});
 
-	test("applies priority for allowlisted model when active", () => {
-		expect(resolveServiceTierForModel(codexModel("gpt-5.6-luna"), stateOn, SPECS, filter)).toBe("priority");
+	test("applies priority with the established rate for a default when active", () => {
+		expect(resolveFastMode(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toEqual({ tier: "priority", multiplier: 2.5 });
 	});
 	test("no tier when inactive", () => {
-		expect(resolveServiceTierForModel(codexModel("gpt-5.6-luna"), stateOff, SPECS, filter)).toBeUndefined();
+		expect(resolveFastMode(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBeUndefined();
 	});
 	test("no tier for non-listed model", () => {
-		expect(resolveServiceTierForModel(codexModel("deepseek-v4-flash"), stateOn, SPECS, filter)).toBeUndefined();
+		expect(resolveFastMode(codexModel("deepseek-v4-flash"), stateOn, SPECS, policy)).toBeUndefined();
 	});
 	test("no tier when the api rejects the configured tier", () => {
 		expect(
-			resolveServiceTierForModel(codexModel("gpt-5.6-luna"), { active: true, serviceTier: "flex" }, SPECS, filter),
+			resolveFastMode(codexModel("gpt-5.6-luna"), { active: true, serviceTier: "flex" }, SPECS, policy),
 		).toBeUndefined();
 	});
 	test("no tier for a blocked default", () => {
-		const f = buildModelFilter(SPECS, { blocklist: [parseModelKey("openai-codex/gpt-5.6-sol")!] });
-		expect(resolveServiceTierForModel(codexModel("gpt-5.6-sol"), stateOn, SPECS, f)).toBeUndefined();
+		const f = buildFastModePolicy(SPECS, { blocklist: [parseModelKey("openai-codex/gpt-5.6-sol")!] });
+		expect(resolveFastMode(codexModel("gpt-5.6-sol"), stateOn, SPECS, f)).toBeUndefined();
+	});
+	test("fails closed for an allowlisted model without an established rate", () => {
+		const f = buildFastModePolicy(SPECS, { allowlist: [parseModelKey("openai-codex/custom-model")!] });
+		expect(isModelAllowed(codexModel("custom-model"), SPECS, f)).toBe(true);
+		expect(resolveFastMode(codexModel("custom-model"), stateOn, SPECS, f)).toBeUndefined();
+	});
+	test("uses the configured rate to tier and price an allowlisted model", () => {
+		const f = buildFastModePolicy(SPECS, {
+			allowlist: [parseModelKey("openai-codex/custom-model")!],
+			multipliers: { "openai-codex/custom-model": 3 },
+		});
+		expect(resolveFastMode(codexModel("custom-model"), stateOn, SPECS, f)).toEqual({ tier: "priority", multiplier: 3 });
+	});
+	test("a configured rate overrides the built-in rate card", () => {
+		const f = buildFastModePolicy(SPECS, { multipliers: { "openai-codex/gpt-5.6-luna": 2 } });
+		expect(resolveFastMode(codexModel("gpt-5.6-luna"), stateOn, SPECS, f)?.multiplier).toBe(2);
+	});
+	test("a rate alone does not tier a non-listed model", () => {
+		const f = buildFastModePolicy(SPECS, { multipliers: { "openai-codex/deepseek-v4-flash": 2 } });
+		expect(resolveFastMode(codexModel("deepseek-v4-flash"), stateOn, SPECS, f)).toBeUndefined();
 	});
 });
 
 describe("fast-mode pricing", () => {
+	const policy = buildFastModePolicy(SPECS, {});
+
 	test("official multipliers per rate card", () => {
-		expect(OFFICIAL_FAST_MULTIPLIER["gpt-6-astra"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.6-sol"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.6-terra"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.6-luna"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.5"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["gpt-5.4"]).toBe(2);
+		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-6-astra"]).toBe(2.5);
+		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-6.1-sol"]).toBe(2.5);
+		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-5.6-sol"]).toBe(2.5);
+		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-5.6-terra"]).toBe(2.5);
+		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-5.6-luna"]).toBe(2.5);
+		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-5.5"]).toBe(2.5);
+		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-5.4"]).toBe(2);
 	});
 
-	test("unknown models fall back to the 2x default", () => {
-		expect(fastModeMultiplier("gpt-5.6-luna")).toBe(2.5);
-		expect(fastModeMultiplier("gpt-5.5")).toBe(2.5);
-		expect(fastModeMultiplier("gpt-5.4")).toBe(2);
-		expect(fastModeMultiplier("deepseek-v4-flash")).toBe(2);
+	test("no rate is established for unknown models instead of guessing one", () => {
+		expect(fastMultiplierFor(codexModel("gpt-6.1-sol"), policy)).toBe(2.5);
+		expect(fastMultiplierFor(codexModel("gpt-5.4"), policy)).toBe(2);
+		expect(fastMultiplierFor(codexModel("deepseek-v4-flash"), policy)).toBeUndefined();
+		expect(fastMultiplierFor({ provider: "custom-codex", id: "gpt-5.6-luna" }, policy)).toBeUndefined();
+		expect(fastMultiplierFor(undefined, policy)).toBeUndefined();
+	});
+
+	test("configured rates establish a multiplier for unknown models", () => {
+		const f = buildFastModePolicy(SPECS, { multipliers: { "openai-codex/deepseek-v4-flash": 2 } });
+		expect(fastMultiplierFor(codexModel("deepseek-v4-flash"), f)).toBe(2);
+	});
+
+	test("parseMultipliers keeps provider/model keys with finite positive multipliers", () => {
+		expect(parseMultipliers({ "openai-codex/custom-model": 2.5 })).toEqual({ "openai-codex/custom-model": 2.5 });
+		expect(parseMultipliers({ "openai-codex/custom-model": 2.5, "openai-codex/other": 2 })).toEqual({
+			"openai-codex/custom-model": 2.5,
+			"openai-codex/other": 2,
+		});
+	});
+
+	test("parseMultipliers drops unestablishable entries", () => {
+		expect(
+			parseMultipliers({
+				"bare-id": 2.5,
+				"openai-codex/": 2.5,
+				"openai-codex/zero": 0,
+				"openai-codex/negative": -1,
+				"openai-codex/infinite": Infinity,
+				"openai-codex/nan": Number.NaN,
+				"openai-codex/string": "2.5",
+				"openai-codex/good": 2.5,
+			}),
+		).toEqual({ "openai-codex/good": 2.5 });
+		expect(parseMultipliers(2.5)).toBeUndefined();
+		expect(parseMultipliers(undefined)).toBeUndefined();
 	});
 
 	const luna = {
@@ -311,6 +369,41 @@ describe("config robustness", () => {
 			const config = resolveConfig(dir);
 			expect(config.allowlist.map((m) => `${m.provider}/${m.id}`)).toEqual(["openai-codex/good"]);
 			expect(config.blocklist.map((m) => `${m.provider}/${m.id}`)).toEqual(["openai-codex/deepseek-v4-flash"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("multipliers without a provider/model key or a finite positive rate are dropped", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-"));
+		try {
+			const projectPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(projectPath), { recursive: true });
+			writeConfig(projectPath, {
+				multipliers: {
+					"openai-codex/good": 2.5,
+					"bare-id": 2.5,
+					"openai-codex/zero": 0,
+					"openai-codex/string": "2.5" as unknown as number,
+				},
+			});
+			expect(resolveConfig(dir).multipliers).toEqual({ "openai-codex/good": 2.5 });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("project multipliers replace the global map per key", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-"));
+		try {
+			const agentDir = join(dir, "agent");
+			writeConfig(join(agentDir, "extensions", CONFIG_BASENAME), {
+				multipliers: { "openai-codex/inherited-model": 3 },
+			});
+			const projectPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(projectPath), { recursive: true });
+			writeConfig(projectPath, { multipliers: { "openai-codex/project-model": 2 } });
+			expect(resolveConfig(dir, agentDir).multipliers).toEqual({ "openai-codex/project-model": 2 });
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -419,6 +512,92 @@ describe("withFastModePricing", () => {
 	});
 });
 
+/** Send one request through the overlaid Codex provider and capture the wire body. */
+async function captureCodexRequestBody(
+	dir: string,
+	config: Parameters<typeof writeConfig>[1],
+	modelId: string,
+): Promise<Record<string, unknown> | undefined> {
+	const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+	mkdirSync(dirname(configPath), { recursive: true });
+	writeConfig(configPath, config);
+	let body: Record<string, unknown> | undefined;
+	const server = Bun.serve({
+		port: 0,
+		fetch: () => new Response(JSON.stringify({ error: { message: "captured" } }), {
+			status: 400,
+			headers: { "content-type": "application/json" },
+		}),
+	});
+	try {
+		const registrations: Array<{ config: { streamSimple: Function } }> = [];
+		const commands: Record<string, { handler: Function }> = {};
+		const events: Record<string, Function> = {};
+		const pi = {
+			registerFlag() {},
+			appendEntry() {},
+			registerProvider(_name: string, config: { streamSimple: Function }) {
+				registrations.push({ config });
+			},
+			registerCommand(name: string, command: { handler: Function }) {
+				commands[name] = command;
+			},
+			on(name: string, handler: Function) {
+				events[name] = handler;
+			},
+			getFlag() {
+				return true;
+			},
+		};
+		piFastMode(pi as never);
+
+		const model = {
+			id: modelId,
+			provider: "openai-codex",
+			api: "openai-codex-responses" as const,
+			baseUrl: `http://127.0.0.1:${server.port}`,
+			maxTokens: 32_000,
+			contextWindow: 272_000,
+			reasoning: true,
+			thinkingLevelMap: { minimal: "low" },
+			input: ["text" as const],
+			cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+		};
+		const ctx = {
+			cwd: dir,
+			model,
+			isProjectTrusted: () => true,
+			systemPrompt: "test",
+			messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+			tools: [],
+			ui: { setStatus() {}, notify() {} },
+			sessionManager: {
+				getEntries: () => [],
+				getBranch: () => [],
+			},
+		};
+		await events.session_start?.({}, ctx);
+		await commands.fast?.handler("on", ctx);
+
+		const payloadToken = Buffer.from(JSON.stringify({
+			"https://api.openai.com/auth": { chatgpt_account_id: "test-account" },
+		})).toString("base64url");
+		const stream = registrations[0]!.config.streamSimple(model, ctx, {
+			apiKey: `e30.${payloadToken}.sig`,
+			transport: "sse",
+			reasoning: "minimal",
+			onPayload(payload: Record<string, unknown>) {
+				body = payload;
+				return payload;
+			},
+		});
+		for await (const _event of stream) {}
+		return body;
+	} finally {
+		server.stop();
+	}
+}
+
 describe("extension registration", () => {
 	test("overlays the existing Codex provider instead of registering a new provider", () => {
 		const registrations: Array<{ name: string; config: { api?: string } }> = [];
@@ -503,6 +682,36 @@ describe("extension registration", () => {
 			expect(last?.message).toContain('"flex" is not accepted by openai-codex-responses');
 			expect(last?.message).not.toContain("not tierable");
 			expect(readConfig(configPath)?.active).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("status explains how to establish a rate for a listed model without one", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-rate-status-"));
+		try {
+			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(configPath), { recursive: true });
+			writeConfig(configPath, {
+				active: false,
+				persistState: false,
+				serviceTier: "priority",
+				allowlist: ["openai-codex/custom-model"],
+			});
+
+			const { ctx, events, commands, statuses, notices } = extensionHarness({
+				cwd: dir,
+				model: codexModel("custom-model"),
+			});
+			await events.session_start?.({}, ctx);
+			await commands.fast?.handler("on", ctx);
+			await commands.fast?.handler("status", ctx);
+
+			const last = notices.at(-1);
+			expect(last?.level).toBe("warning");
+			expect(last?.message).toContain("no established fast-mode rate");
+			expect(last?.message).toContain('"multipliers": { "openai-codex/custom-model"');
+			expect(statuses.at(-1)).toBeUndefined();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -631,104 +840,60 @@ describe("extension registration", () => {
 
 	test("sends priority service_tier through the overlaid Codex provider", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-live-"));
-		const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
-		mkdirSync(dirname(configPath), { recursive: true });
-		writeConfig(configPath, { active: false, persistState: false, serviceTier: "priority" });
-		let body: Record<string, unknown> | undefined;
-		const server = Bun.serve({
-			port: 0,
-			fetch: () => new Response(JSON.stringify({ error: { message: "captured" } }), {
-				status: 400,
-				headers: { "content-type": "application/json" },
-			}),
-		});
 		try {
-			const registrations: Array<{ config: { streamSimple: Function } }> = [];
-			const commands: Record<string, { handler: Function }> = {};
-			const events: Record<string, Function> = {};
-			const pi = {
-				registerFlag() {},
-				appendEntry() {},
-				registerProvider(_name: string, config: { streamSimple: Function }) {
-					registrations.push({ config });
-				},
-				registerCommand(name: string, command: { handler: Function }) {
-					commands[name] = command;
-				},
-				on(name: string, handler: Function) {
-					events[name] = handler;
-				},
-				getFlag() {
-					return true;
-				},
-			};
-			piFastMode(pi as never);
-
-			const model = {
-				id: "gpt-5.6-luna",
-				provider: "openai-codex",
-				api: "openai-codex-responses" as const,
-				baseUrl: `http://127.0.0.1:${server.port}`,
-				maxTokens: 32_000,
-				contextWindow: 272_000,
-				reasoning: true,
-				thinkingLevelMap: { minimal: "low" },
-				input: ["text" as const],
-				cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
-			};
-			const ctx = {
-				cwd: dir,
-				model,
-				isProjectTrusted: () => true,
-				systemPrompt: "test",
-				messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-				tools: [],
-				ui: { setStatus() {}, notify() {} },
-				sessionManager: {
-					getEntries: () => [],
-					getBranch: () => [],
-				},
-			};
-			await events.session_start?.({}, ctx);
-			await commands.fast?.handler("on", ctx);
-
-			const payloadToken = Buffer.from(JSON.stringify({
-				"https://api.openai.com/auth": { chatgpt_account_id: "test-account" },
-			})).toString("base64url");
-			const stream = registrations[0]!.config.streamSimple(model, ctx, {
-				apiKey: `e30.${payloadToken}.sig`,
-				transport: "sse",
-				reasoning: "minimal",
-				onPayload(payload: Record<string, unknown>) {
-					body = payload;
-					return payload;
-				},
-			});
-			for await (const _event of stream) {}
-
+			const body = await captureCodexRequestBody(
+				dir,
+				{ active: false, persistState: false, serviceTier: "priority" },
+				"gpt-5.6-luna",
+			);
 			expect(body?.model).toBe("gpt-5.6-luna");
 			expect(body?.service_tier).toBe("priority");
 		} finally {
-			server.stop();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("sends no service_tier for a listed model without an established rate", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-live-"));
+		try {
+			const body = await captureCodexRequestBody(
+				dir,
+				{ active: false, persistState: false, serviceTier: "priority", allowlist: ["openai-codex/custom-model"] },
+				"custom-model",
+			);
+			expect(body?.model).toBe("custom-model");
+			expect(body?.service_tier).toBeUndefined();
+		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });
 
 describe("statusText", () => {
-	const filter = buildModelFilter(SPECS, {});
+	const policy = buildFastModePolicy(SPECS, {});
 	test("shows a compact fast indicator when applied", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, filter)).toBe("⚡ FAST · $ 2.5×");
+		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toBe("⚡ FAST · $ 2.5×");
 	});
 	test("stays empty when active but model is not allowed", () => {
-		const f = buildModelFilter(SPECS, {});
+		const f = buildFastModePolicy(SPECS, {});
 		expect(statusText(codexModel("deepseek-v4-flash"), stateOn, SPECS, f)).toBe("");
 	});
 	test("empty when off", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), stateOff, SPECS, filter)).toBe("");
+		expect(statusText(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBe("");
 	});
 	test("stays empty when the configured tier is unsupported", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), { active: true, serviceTier: "flex" }, SPECS, filter)).toBe("");
+		expect(statusText(codexModel("gpt-5.6-luna"), { active: true, serviceTier: "flex" }, SPECS, policy)).toBe("");
+	});
+	test("shows the established configured multiplier", () => {
+		const f = buildFastModePolicy(SPECS, {
+			allowlist: [parseModelKey("openai-codex/custom-model")!],
+			multipliers: { "openai-codex/custom-model": 3 },
+		});
+		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("⚡ FAST · $ 3×");
+	});
+	test("stays empty for a listed model without an established rate", () => {
+		const f = buildFastModePolicy(SPECS, { allowlist: [parseModelKey("openai-codex/custom-model")!] });
+		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("");
 	});
 });
 
