@@ -435,7 +435,7 @@ interface CostableUsage {
  * Recompute displayed fast-mode cost: pi-ai's `calculateCost` is idempotent — it
  * reads only raw token counts and `model.cost`, never the previously stored
  * cost — so re-running it cleanly replaces any prior (multiplied) pricing, then
- * the official rate-card multiplier is applied. This depends on `model.cost`
+ * the established multiplier is applied. This depends on `model.cost`
  * and pi-ai's tier logic, not on pi-ai's internal multiplier table.
  */
 export function applyFastModePricing(model: Model<Api>, usage: CostableUsage, multiplier: number): void {
@@ -495,7 +495,7 @@ export function withFastModePricing(
 	model: Model<Api>,
 	multiplier: number,
 ): AssistantMessageEventStream {
-	if (multiplier === 1) return stream;
+	// Even 1× must replace the raw provider's own priority multiplier.
 	const out = createAssistantMessageEventStream();
 	void (async () => {
 		try {

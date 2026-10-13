@@ -393,7 +393,7 @@ describe("config robustness", () => {
 		}
 	});
 
-	test("project multipliers replace the global map per key", () => {
+	test("project multipliers replace the global map", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-"));
 		try {
 			const agentDir = join(dir, "agent");
@@ -458,7 +458,7 @@ describe("withFastModePricing", () => {
 		cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, tiers: [] },
 	};
 
-	test("recomputes cost from raw tokens on the done event, replacing prior pricing", async () => {
+	test.each([1, 2.5])("recomputes cost from raw tokens with multiplier %s, replacing prior pricing", async multiplier => {
 		const raw = createAssistantMessageEventStream();
 		// Simulates pi-ai's flow: base cost 1e6×$0.2/1e6 + 0.5e6×$1.2/1e6 = $0.8, then its builtin ×2 = $1.6.
 		const usage = {
@@ -472,18 +472,13 @@ describe("withFastModePricing", () => {
 		raw.push({ type: "done", reason: "stop", message: { content: [], usage } } as never);
 		raw.end();
 
-		const wrapped = withFastModePricing(raw as never, model as never, 2.5);
+		const wrapped = withFastModePricing(raw as never, model as never, multiplier);
 		const events: unknown[] = [];
 		for await (const event of wrapped) events.push(event);
 
 		const done = events[0] as { message: { usage: { cost: { input: number; total: number } } } };
-		expect(done.message.usage.cost.input).toBeCloseTo(0.5); // 1e6 × 0.2/1e6 × 2.5
-		expect(done.message.usage.cost.total).toBeCloseTo(2.0);
-	});
-
-	test("returns the stream untouched when multiplier is 1", () => {
-		const raw = createAssistantMessageEventStream();
-		expect(withFastModePricing(raw, model as never, 1)).toBe(raw);
+		expect(done.message.usage.cost.input).toBeCloseTo(0.2 * multiplier);
+		expect(done.message.usage.cost.total).toBeCloseTo(0.8 * multiplier);
 	});
 
 	test("surfaces a mid-stream throw as an error event instead of hanging", async () => {
