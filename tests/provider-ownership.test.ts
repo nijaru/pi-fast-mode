@@ -312,6 +312,28 @@ describe("ModelRuntime provider ownership", () => {
 		expect(f.errors).toEqual([]);
 	});
 
+	test("a temporary ownership conflict retains the overlay for recovery and disposal", async () => {
+		const f = await fixture([piFastMode], true);
+		const original = f.registry.getRegisteredProviderConfig(model.provider)!;
+		const temporary: NonNullable<typeof original.streamSimple> = (request, transcript, options) =>
+			original.streamSimple!(request, transcript, options);
+		f.runtime.registerProvider(model.provider, { api: model.api, streamSimple: temporary });
+		await f.session.prompt("/fast status");
+		expect(f.statuses.get(STATUS_KEY)).toBeUndefined();
+		expect((await stockRequest(f.runtime)).body?.service_tier).toBeUndefined();
+		f.runtime.registerProvider(model.provider, { api: model.api, streamSimple: original.streamSimple });
+		await f.session.prompt("/fast status");
+		expect(f.statuses.get(STATUS_KEY)).toContain("2.5×");
+		expect(f.notices.at(-1)).toContain("Fast mode: priority service tier");
+		const recovered = await stockRequest(f.runtime);
+		expect(recovered.body?.service_tier).toBe("priority");
+		expect(recovered.result.usage.cost.total).toBeCloseTo(2);
+		f.session.dispose();
+		expect(f.registry.getRegisteredProviderConfig(model.provider)).toBeUndefined();
+		expect((await stockRequest(f.runtime)).body?.service_tier).toBeUndefined();
+		expect(f.errors).toEqual([]);
+	});
+
 	test.each([
 		["shutdown", "fast-first"], ["dispose", "fast-first"],
 		["shutdown", "observer-first"], ["dispose", "observer-first"],

@@ -664,7 +664,8 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		// Keep the stock overlay as a no-op while off so compaction can observe
 		// ordinary Codex requests without losing its delegate on /fast toggles.
 		if (overlay?.inDispatchPath()) return true;
-		overlay = undefined;
+		// Keep the handle while displaced: a temporary wrapper may restore our
+		// exact stream, which must remain recoverable and releasable on disposal.
 		// All load-time registrations have flushed by session_start. Recheck at
 		// commands/turns too: another extension can replace the owner at any time.
 		const spec = CODEX_RESPONSES_SPEC;
