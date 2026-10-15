@@ -21,7 +21,7 @@ Restart pi. Development checks target Pi 1.2.0. Requires pi / `@earendil-works/p
 /fast status           show current state and the active model
 ```
 
-When enabled and the active model is supported, a compact footer status shows `⚡ FAST · $ 2.5×`; the active model is already shown elsewhere in the footer. Requests only change for listed OpenAI Codex models with an established fast-mode rate; all other models and providers are untouched.
+When enabled, supported, and installed without a provider conflict, a compact footer status shows `⚡ FAST · $ 2.5×`; the active model is already shown elsewhere in the footer. Requests only change for listed OpenAI Codex models with an established fast-mode rate; all other models and providers are untouched.
 
 ## Supported models
 
@@ -62,13 +62,15 @@ Fast-mode state is recorded in each session's history, like model changes. `/fas
 
 OpenAI renamed priority processing to Fast mode on July 30, 2026 and also accepts `service_tier: "fast"` on the wire. This extension keeps `serviceTier: "priority"` as its only accepted value — `"fast"` is not in the spec's supported tiers and would silently disable tiering if accepted.
 
-## Adding another provider/API
+## Provider compatibility
 
-Fast mode is applied through `ApiTierSpec` entries in `extensions/index.ts`. Each spec declares the provider it overlays, the API name, the tiers that API accepts, a default model allowlist, and the raw pi-ai stream call; the spec registers its own provider overlay. Commands, config, pricing, and the footer status are spec-driven, so adding an API is one spec — no structural refactor.
+Fast mode uses Pi's stock Codex transport. Static model, authentication, endpoint, and header configuration is preserved. Native provider replacements, custom stream handlers, and dynamically refreshed legacy catalogs are left untouched, even when fast mode is enabled.
+
+Pi 1.2 provider registration replaces stream owners rather than composing middleware. Fast mode cooperates with a `pi-provider-compaction` observer that explicitly marks transparent delegation to fast mode's own stock overlay. Other stream wrappers and provider replacements remain unsupported: fast mode adds no priority tier or fast-mode pricing, hides the footer indicator, and explains the conflict in `/fast status`. Disable the competing provider extension and reload to use `/fast`.
 
 ## How it works
 
-- Overlays the existing `openai-codex` provider with an API-layer stream handler that adds `serviceTier` to request options on allowlisted models, preserving Pi's built-in Codex models and authentication.
+- Installs a stock Codex stream handler only when no competing stream owner exists. While enabled, it adds `serviceTier` to eligible requests, preserving Pi's built-in Codex models and authentication. While off, the handler forwards requests without adding a tier or changing pricing, so a cooperative compaction observer can still observe ordinary requests. Shutdown or SDK disposal releases that observer first if present, then removes only fast mode's own handler, preserving later configuration changes.
 - Uses session custom entries to restore fast-mode state per session and updates the global `active` setting whenever `/fast` changes.
 - pi-ai converts `options.serviceTier` into the `service_tier` request body field and applies its priority cost multiplier, so the request path is unchanged.
 - Fast-mode cost accounting: on terminal stream events the extension re-runs pi-ai's `calculateCost` (token counts × `model.cost`, tier-aware), excludes Codex cache writes, and applies the model's established fast-mode multiplier (verified rate card or configured `multipliers`) on top. Without an established rate there is no tier and no pricing, so a cost is never multiplied by a guess. This is independent of pi-ai's internal multiplier table, so it stays correct if pi-ai changes its internals. Token counts are real and never modified.

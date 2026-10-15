@@ -1,14 +1,14 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, test } from "bun:test";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { afterEach, describe, expect, test } from "bun:test";
+import { cleanupSessionResources, createAssistantMessageEventStream, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import piFastMode, {
 	buildFullOpenAIOptions,
 	buildFastModePolicy,
 	applyFastModePricing,
 	fastMultiplierFor,
-	CODEX_PROVIDER,
 	CONFIG_BASENAME,
 	isModelAllowed,
 	OFFICIAL_FAST_MULTIPLIER,
@@ -31,21 +31,35 @@ const codexModel = (id: string) => ({
 	api: "openai-codex-responses" as const,
 });
 
-/** Minimal fake pi + ctx harness shared by the registration tests. */
-function extensionHarness(opts: {
+const harnessSessions = new Set<string>();
+afterEach(() => {
+	for (const id of harnessSessions) cleanupSessionResources(id);
+	harnessSessions.clear();
+});
+
+/** Real registry with isolated storage; commands/events have a small UI harness. */
+async function extensionHarness(opts: {
 	cwd: string;
 	entries?: unknown[];
 	model?: ReturnType<typeof codexModel> | undefined;
 	buildContextEntries?: () => unknown[] | undefined;
 	trusted?: boolean;
 }) {
+	harnessSessions.add(opts.cwd);
+	const credentials = new InMemoryCredentialStore();
+	const runtime = await ModelRuntime.create({
+		credentials, modelsPath: null, refreshOnCreate: false,
+	});
+	const modelRegistry = new ModelRegistry(runtime);
 	const entries: unknown[] = opts.entries ?? [];
 	const events: Record<string, Function> = {};
 	const commands: Record<string, { handler: Function }> = {};
 	const statuses: Array<string | undefined> = [];
 	const notices: Array<{ message: string; level: string }> = [];
 	const pi = {
-		registerProvider() {},
+		registerProvider(name: string, config: Parameters<ModelRuntime["registerProvider"]>[1]) {
+			runtime.registerProvider(name, config);
+		},
 		appendEntry(type: string, data: unknown) {
 			entries.push({ type: "custom", customType: type, data });
 		},
@@ -60,6 +74,7 @@ function extensionHarness(opts: {
 	const ctx = {
 		cwd: opts.cwd,
 		model: opts.model,
+		modelRegistry,
 		isProjectTrusted: () => opts.trusted ?? true,
 		ui: {
 			setStatus(_key: string, value: string | undefined) {
@@ -70,12 +85,13 @@ function extensionHarness(opts: {
 			},
 		},
 		sessionManager: {
+			getSessionId: () => opts.cwd,
 			getEntries: () => entries,
 			getBranch: () => entries,
 			buildContextEntries: opts.buildContextEntries,
 		},
 	};
-	return { pi, ctx, entries, events, commands, statuses, notices };
+	return { pi, ctx, runtime, credentials, entries, events, commands, statuses, notices };
 }
 
 const stateOn = { active: true, serviceTier: "priority" as const };
@@ -525,64 +541,38 @@ async function captureCodexRequestBody(
 		}),
 	});
 	try {
-		const registrations: Array<{ config: { streamSimple: Function } }> = [];
-		const commands: Record<string, { handler: Function }> = {};
-		const events: Record<string, Function> = {};
-		const pi = {
-			registerFlag() {},
-			appendEntry() {},
-			registerProvider(_name: string, config: { streamSimple: Function }) {
-				registrations.push({ config });
-			},
-			registerCommand(name: string, command: { handler: Function }) {
-				commands[name] = command;
-			},
-			on(name: string, handler: Function) {
-				events[name] = handler;
-			},
-			getFlag() {
-				return true;
-			},
-		};
-		piFastMode(pi as never);
-
 		const model = {
 			id: modelId,
+			name: modelId,
 			provider: "openai-codex",
 			api: "openai-codex-responses" as const,
 			baseUrl: `http://127.0.0.1:${server.port}`,
 			maxTokens: 32_000,
 			contextWindow: 272_000,
 			reasoning: true,
-			thinkingLevelMap: { minimal: "low" },
+			thinkingLevelMap: { minimal: "low" as const },
 			input: ["text" as const],
 			cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
 		};
-		const ctx = {
-			cwd: dir,
-			model,
-			isProjectTrusted: () => true,
-			systemPrompt: "test",
-			messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-			tools: [],
-			ui: { setStatus() {}, notify() {} },
-			sessionManager: {
-				getEntries: () => [],
-				getBranch: () => [],
-			},
-		};
+		const { ctx, runtime, credentials, events, commands } = await extensionHarness({ cwd: dir, model });
 		await events.session_start?.({}, ctx);
 		await commands.fast?.handler("on", ctx);
 
 		const payloadToken = Buffer.from(JSON.stringify({
 			"https://api.openai.com/auth": { chatgpt_account_id: "test-account" },
 		})).toString("base64url");
-		const stream = registrations[0]!.config.streamSimple(model, ctx, {
+		await credentials.modify("openai-codex", async () => ({
+			type: "oauth", access: `e30.${payloadToken}.sig`, refresh: "test", expires: Date.now() + 3_600_000,
+		}));
+		const stream = runtime.streamSimple(model, {
+			systemPrompt: "test",
+			messages: [{ role: "user", content: "hello", timestamp: 0 }],
+		}, {
 			apiKey: `e30.${payloadToken}.sig`,
 			transport: "sse",
 			reasoning: "minimal",
-			onPayload(payload: Record<string, unknown>) {
-				body = payload;
+			onPayload(payload) {
+				body = payload as Record<string, unknown>;
 				return payload;
 			},
 		});
@@ -594,7 +584,7 @@ async function captureCodexRequestBody(
 }
 
 describe("extension registration", () => {
-	test("overlays the existing Codex provider instead of registering a new provider", () => {
+	test("does not register a provider during extension loading", () => {
 		const registrations: Array<{ name: string; config: { api?: string } }> = [];
 		const pi = {
 			registerFlag() {},
@@ -610,9 +600,7 @@ describe("extension registration", () => {
 
 		piFastMode(pi as never);
 
-		expect(registrations).toHaveLength(1);
-		expect(registrations[0]?.name).toBe(CODEX_PROVIDER);
-		expect(registrations[0]?.config.api).toBe("openai-codex-responses");
+		expect(registrations).toHaveLength(0);
 	});
 
 	test("completes the supported command arguments", () => {
@@ -641,7 +629,7 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: false, persistState: false, serviceTier: "priority" });
 
-			const { ctx, events, commands, statuses, notices } = extensionHarness({
+			const { ctx, events, commands, statuses, notices } = await extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
 				entries: [{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } }],
@@ -665,7 +653,7 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: false, persistState: false, serviceTier: "flex" });
 
-			const { ctx, events, commands, notices } = extensionHarness({
+			const { ctx, events, commands, notices } = await extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
 			});
@@ -694,7 +682,7 @@ describe("extension registration", () => {
 				allowlist: ["openai-codex/custom-model"],
 			});
 
-			const { ctx, events, commands, statuses, notices } = extensionHarness({
+			const { ctx, events, commands, statuses, notices } = await extensionHarness({
 				cwd: dir,
 				model: codexModel("custom-model"),
 			});
@@ -719,7 +707,7 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: true, persistState: true, serviceTier: "priority" });
 
-			const { ctx, events, entries } = extensionHarness({
+			const { ctx, events, entries } = await extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
 				entries: [{ type: "message", message: { role: "user", content: "old" } }],
@@ -746,7 +734,7 @@ describe("extension registration", () => {
 				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
 			];
-			const { ctx, events, statuses, entries } = extensionHarness({
+			const { ctx, events, statuses, entries } = await extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
 				entries: initialEntries,
@@ -773,7 +761,7 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
 
-			const { ctx, events, commands, entries } = extensionHarness({
+			const { ctx, events, commands, entries } = await extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
 			});
@@ -791,7 +779,7 @@ describe("extension registration", () => {
 				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
 			];
-			const future = extensionHarness({
+			const future = await extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
 				entries: futureEntries,
@@ -817,7 +805,7 @@ describe("extension registration", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
 
-			const { ctx, events, statuses } = extensionHarness({
+			const { ctx, events, statuses } = await extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
 				entries: [
@@ -900,7 +888,7 @@ describe("session_tree", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
 
-			const { ctx, events, statuses } = extensionHarness({
+			const { ctx, events, statuses } = await extensionHarness({
 				cwd: dir,
 			model: codexModel("gpt-5.6-luna"),
 				entries: [
@@ -922,7 +910,7 @@ describe("session_tree", () => {
 			mkdirSync(dirname(configPath), { recursive: true });
 			writeConfig(configPath, { active: true, persistState: true, serviceTier: "priority" });
 
-			const { ctx, events, statuses } = extensionHarness({
+			const { ctx, events, statuses } = await extensionHarness({
 				cwd: dir,
 			model: codexModel("gpt-5.6-luna"),
 				entries: [{ type: "message", message: { role: "user", content: "old" } }],
@@ -953,7 +941,7 @@ describe("config write preservation", () => {
 				}),
 			);
 
-			const { ctx, events, commands } = extensionHarness({
+			const { ctx, events, commands } = await extensionHarness({
 				cwd: dir,
 				model: codexModel("gpt-5.6-luna"),
 			});

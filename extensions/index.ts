@@ -34,8 +34,8 @@
  * its internals. Token counts are real and never modified.
  */
 
-import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { calculateCost, clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { calculateCost, clampThinkingLevel, createAssistantMessageEventStream, registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 import type {
 	Api,
@@ -64,7 +64,7 @@ export type CodexStreamOptions = SimpleStreamOptions & {
 };
 
 export const CONFIG_BASENAME = "pi-fast-mode.json";
-/** Existing provider whose Codex models should receive the API-layer override. */
+/** Stock provider eligible for the fast-mode stream overlay. */
 export const CODEX_PROVIDER = "openai-codex";
 // Footer statuses are rendered alphabetically by key; keep fast mode ahead of MCP.
 export const STATUS_KEY = "fast-mode";
@@ -97,10 +97,7 @@ export const DEFAULT_FAST_MODE_MODELS = [
 	"openai-codex/gpt-5.5",
 ] as const;
 
-/**
- * How a fast tier is applied for one API. One spec per API; everything else in
- * the extension is driven off these.
- */
+/** Request-tier and rate-card policy for one API. */
 export interface ApiTierSpec {
 	/** Provider whose models on `api` should receive the overlay. */
 	provider: string;
@@ -560,9 +557,126 @@ export function statusText(
 	return `⚡ FAST · $ ${resolution.multiplier}×`;
 }
 
+/** Plain request policy only: registered streams never retain extension contexts. */
+interface FastModeSession {
+	state: RuntimeState;
+	policy: FastModePolicy;
+}
+
+interface FastModeOverlay {
+	inDispatchPath(): boolean;
+	release(): void;
+}
+
+const COMPACTION_STREAM_OBSERVER = Symbol.for("@nijaru/pi-provider-compaction/stream-observer");
+
+interface CompactionStreamObserver {
+	delegate: unknown;
+	release(): void;
+}
+
+/** One trusted first-party observer, not an arbitrary middleware chain. */
+function compactionObserver(stream: unknown, delegate: unknown): CompactionStreamObserver | undefined {
+	if (typeof stream !== "function") return undefined;
+	const descriptor = Object.getOwnPropertyDescriptor(stream, COMPACTION_STREAM_OBSERVER);
+	if (descriptor?.enumerable !== false) return undefined;
+	const marker: unknown = descriptor.value;
+	if (!isRecord(marker) || marker.delegate !== delegate || typeof marker.release !== "function") return undefined;
+	return marker as unknown as CompactionStreamObserver;
+}
+
+/**
+ * Pi 1.2 registration replaces owners, it does not compose middleware. Only
+ * install over the stock stream; custom/native owners and mutable legacy
+ * catalogs must be left intact. Never promote an effective composed provider
+ * to a native base (models.json would be applied twice and model headers lost).
+ */
+function installFastModeOverlay(
+	registry: ModelRegistry,
+	session: FastModeSession,
+	spec: ApiTierSpec,
+): FastModeOverlay {
+	const original = registry.getRegisteredProviderConfig(spec.provider);
+	const inDispatchPath = () => {
+		const current = registry.getRegisteredProviderConfig(spec.provider);
+		return !registry.getRegisteredNativeProvider(spec.provider) && current?.api === spec.api &&
+			(current.streamSimple === streamSimple || compactionObserver(current.streamSimple, streamSimple) !== undefined);
+	};
+	const streamSimple = (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) => {
+		const resolution = inDispatchPath() ? resolveFastMode(model, session.state, SPECS, session.policy) : undefined;
+		const stream = spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, resolution?.tier));
+		return resolution ? withFastModePricing(stream, model, resolution.multiplier) : stream;
+	};
+	registry.registerProvider(spec.provider, { api: spec.api, streamSimple });
+	return {
+		inDispatchPath,
+		release() {
+			const current = registry.getRegisteredProviderConfig(spec.provider);
+			// The observer restores its exact delegate while preserving later config.
+			// Recheck afterward: neither release may remove another owner's slot.
+			compactionObserver(current?.streamSimple, streamSimple)?.release();
+			if (!inDispatchPath() || registry.getRegisteredProviderConfig(spec.provider)?.streamSimple !== streamSimple) return;
+			const restored = { ...registry.getRegisteredProviderConfig(spec.provider) };
+			delete restored.streamSimple;
+			if (original?.api === undefined) delete restored.api;
+			else restored.api = original.api;
+			// Undefined fields do not remove a legacy registration's values.
+			registry.unregisterProvider(spec.provider);
+			if (Object.keys(restored).length) registry.registerProvider(spec.provider, restored);
+		},
+	};
+}
+
 export default function piFastMode(pi: ExtensionAPI): void {
 	let config: ResolvedConfig = defaultResolvedConfig(process.cwd());
 	let state: RuntimeState = { active: config.active, serviceTier: config.serviceTier };
+	let session: FastModeSession | undefined;
+	let overlay: FastModeOverlay | undefined;
+	let registry: ModelRegistry | undefined;
+	let sessionId: string | undefined;
+	let unregisterCleanup: (() => void) | undefined;
+
+	function cleanup(): void {
+		if (session) session.state = { ...session.state, active: false };
+		overlay?.release();
+		overlay = undefined;
+		session = undefined;
+		registry = undefined;
+		sessionId = undefined;
+		unregisterCleanup?.();
+		unregisterCleanup = undefined;
+	}
+
+	function syncOverlay(ctx: ExtensionContext, policy: FastModePolicy): boolean {
+		const id = ctx.sessionManager.getSessionId();
+		if (registry !== ctx.modelRegistry || sessionId !== id) {
+			cleanup();
+			registry = ctx.modelRegistry;
+			sessionId = id;
+			// SDK dispose() calls this even without session_shutdown. Remove only
+			// our own stream and unregister the cleanup itself, idempotently.
+			unregisterCleanup = registerSessionResourceCleanup(disposedId => {
+				if (disposedId === undefined || disposedId === sessionId) cleanup();
+			});
+		}
+		session ??= { state, policy };
+		Object.assign(session, { state, policy });
+		// Keep the stock overlay as a no-op while off so compaction can observe
+		// ordinary Codex requests without losing its delegate on /fast toggles.
+		if (overlay?.inDispatchPath()) return true;
+		overlay = undefined;
+		// All load-time registrations have flushed by session_start. Recheck at
+		// commands/turns too: another extension can replace the owner at any time.
+		const spec = CODEX_RESPONSES_SPEC;
+		const legacy = registry.getRegisteredProviderConfig(spec.provider);
+		if (registry.getRegisteredNativeProvider(spec.provider) || legacy?.streamSimple ||
+			legacy?.refreshModels || legacy?.oauth?.modifyModels ||
+			(legacy?.api !== undefined && legacy.api !== spec.api)) return false;
+		// Eligibility belongs to the dispatched model, not ctx.model: nested or
+		// routed Codex calls can differ from the model selected in the UI.
+		overlay = installFastModeOverlay(registry, session, spec);
+		return overlay.inDispatchPath();
+	}
 
 	function refreshConfig(ctx: ExtensionContext): ResolvedConfig {
 		config = resolveConfig(getConfigCwd(ctx), getAgentDir(), ctx.isProjectTrusted());
@@ -601,9 +715,10 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		appendSessionState();
 	}
 
-	function updateStatus(ctx: ExtensionContext): void {
+	function updateStatus(ctx: ExtensionContext, synchronize = true): void {
 		const policy = buildFastModePolicy(SPECS, config);
-		const text = statusText(ctx.model, state, SPECS, policy);
+		const installed = synchronize ? syncOverlay(ctx, policy) : overlay?.inDispatchPath();
+		const text = statusText(ctx.model, state, installed ? SPECS : [], policy);
 		ctx.ui.setStatus(STATUS_KEY, text ? `· ${text}` : undefined);
 	}
 
@@ -617,6 +732,13 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		const policy = buildFastModePolicy(SPECS, config);
 		const resolution = resolveFastMode(ctx.model, state, SPECS, policy);
 		const modelKey = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
+		if (resolution && !overlay?.inDispatchPath()) {
+			ctx.ui.notify(
+				`Fast mode is on, but inactive: another provider or stream owns ${ctx.model?.provider}. This extension is not applying a priority tier or fast-mode pricing. Disable the competing provider extension and reload to use /fast.`,
+				"warning",
+			);
+			return;
+		}
 		if (resolution) {
 			ctx.ui.notify(
 				`Fast mode: ${resolution.tier} service tier for ${modelKey}. Cost accounting applies the ${resolution.multiplier}× fast-mode multiplier.`,
@@ -657,20 +779,6 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		refreshConfig(ctx);
 		updateStatus(ctx);
 		notifyStatus(ctx);
-	}
-
-	for (const spec of SPECS) {
-		// Overlay the built-in provider to preserve its models and authentication.
-		pi.registerProvider(spec.provider, {
-			api: spec.api,
-			streamSimple(model, context, options) {
-				const policy = buildFastModePolicy(SPECS, config);
-				const resolution = resolveFastMode(model, state, SPECS, policy);
-				const stream = spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, resolution?.tier));
-				if (!resolution) return stream;
-				return withFastModePricing(stream, model, resolution.multiplier);
-			},
-		});
 	}
 
 	pi.registerCommand(COMMAND_FAST, {
@@ -716,7 +824,18 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 	});
 
+	pi.on("turn_start", async (_event, ctx) => {
+		updateStatus(ctx);
+	});
+
+	pi.on("before_provider_request", async (_event, ctx) => {
+		// Payloads are already built here. Observe late ownership changes, but
+		// never install a handler too late to apply to this request.
+		updateStatus(ctx, false);
+	});
+
 	pi.on("session_shutdown", async (_event, ctx) => {
+		cleanup();
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 }
