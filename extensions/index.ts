@@ -213,23 +213,24 @@ export function parseModelKey(value: string): SupportedModel | undefined {
 	return provider && id ? { provider, id } : undefined;
 }
 
-export function normalizeModelKeys(value: unknown): string[] | undefined {
-	if (value === undefined) return undefined;
+export function parseModels(value: unknown): SupportedModel[] | undefined {
 	if (!Array.isArray(value)) return undefined;
-	const keys = value
+	const models = value
 		.filter((entry): entry is string => typeof entry === "string")
 		.map((entry) => parseModelKey(entry))
-		.filter((entry): entry is SupportedModel => entry !== undefined)
-		.map((entry) => `${entry.provider}/${entry.id}`);
-	return [...new Set(keys)];
+		.filter((entry): entry is SupportedModel => entry !== undefined);
+	const seen = new Set<string>();
+	return models.filter((model) => {
+		const key = `${model.provider}/${model.id}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
 }
 
-export function parseModels(value: unknown): SupportedModel[] | undefined {
-	const keys = normalizeModelKeys(value);
-	if (keys === undefined) return undefined;
-	return keys
-		.map((key) => parseModelKey(key))
-		.filter((entry): entry is SupportedModel => entry !== undefined);
+/** Normalized `provider/model` keys, as stored in the config file. */
+export function normalizeModelKeys(value: unknown): string[] | undefined {
+	return parseModels(value)?.map((model) => `${model.provider}/${model.id}`);
 }
 
 /**
@@ -304,19 +305,6 @@ function configForWrite(path: string, active: boolean): ConfigFile {
 		// Fall through to the normalized config below.
 	}
 	return { ...readConfig(path), active };
-}
-
-export function defaultResolvedConfig(cwd: string, agentDir = getAgentDir()): ResolvedConfig {
-	const paths = configPaths(cwd, agentDir);
-	return {
-		configPath: paths.global,
-		persistState: DEFAULT_CONFIG.persistState,
-		active: DEFAULT_CONFIG.active,
-		serviceTier: DEFAULT_CONFIG.serviceTier,
-		allowlist: [],
-		blocklist: [],
-		multipliers: {},
-	};
 }
 
 export function resolveConfig(cwd: string, agentDir = getAgentDir(), trusted = true): ResolvedConfig {
@@ -462,6 +450,12 @@ function scaleEventUsage(event: AssistantMessageEvent, model: Model<Api>, multip
 	}
 }
 
+function terminalMessage(event: AssistantMessageEvent): AssistantMessage | undefined {
+	if (event.type === "done") return event.message;
+	if (event.type === "error") return event.error;
+	return undefined;
+}
+
 /**
  * Wrap the raw stream, forwarding every event unchanged but recomputing the
  * fast-mode cost on the terminal done/error events.
@@ -496,15 +490,27 @@ export function withFastModePricing(
 	const out = createAssistantMessageEventStream();
 	void (async () => {
 		try {
+			let final: AssistantMessage | undefined;
 			for await (const event of stream) {
 				scaleEventUsage(event, model, multiplier);
 				out.push(event);
+				final = terminalMessage(event) ?? final;
 			}
-			out.end(await stream.result());
+			// The forwarded terminal event already resolved `out` to the same
+			// message. Ending from that event instead of `stream.result()` avoids
+			// depending on a result promise a source can leave unresolved.
+			if (final) {
+				out.end(final);
+				return;
+			}
+			// A source that ends without a terminal event would otherwise leave
+			// result() pending forever. Surface it as an error, like a throw.
+			const message = createStreamErrorMessage(model, new Error("Stream ended without a done or error event"));
+			out.push({ type: "error", reason: "error", error: message });
+			out.end(message);
 		} catch (error) {
-			// pi-ai streams resolve result() only via end(message); surface the
-			// failure as an error event the way lazyStream does so consumers
-			// never hang on an unresolved result.
+			// pi-ai streams resolve result() only via a terminal event; surface the
+			// failure as one so consumers never hang on an unresolved result.
 			const message = createStreamErrorMessage(model, error);
 			out.push({ type: "error", reason: "error", error: message });
 			out.end(message);
@@ -517,7 +523,7 @@ export function withFastModePricing(
  * Rebuild request options for the raw Codex stream: forward the caller's
  * options, keep reasoning as a concrete effort (mirroring pi-ai's streamSimple),
  * and add `serviceTier` only when a tier applies for this model. The Codex
- * request body has no max_tokens field, so maxTokens is never forwarded.
+ * request body has no token-limit field, so a forwarded maxTokens has no effect.
  */
 export function buildFullOpenAIOptions(
 	model: Model<Api>,
@@ -628,7 +634,7 @@ function installFastModeOverlay(
 }
 
 export default function piFastMode(pi: ExtensionAPI): void {
-	let config: ResolvedConfig = defaultResolvedConfig(process.cwd());
+	let config: ResolvedConfig = resolveConfig(process.cwd(), getAgentDir(), false);
 	let state: RuntimeState = { active: config.active, serviceTier: config.serviceTier };
 	let session: FastModeSession | undefined;
 	let overlay: FastModeOverlay | undefined;

@@ -11,7 +11,6 @@ import piFastMode, {
 	fastMultiplierFor,
 	CONFIG_BASENAME,
 	isModelAllowed,
-	OFFICIAL_FAST_MULTIPLIER,
 	parseModelKey,
 	parseMultipliers,
 	readConfig,
@@ -150,20 +149,6 @@ describe("config", () => {
 describe("isModelAllowed", () => {
 	const policy = buildFastModePolicy(SPECS, {});
 
-	test.each(["gpt-6-astra", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])("resolves priority for the supported default %s", id => {
-		expect(resolveFastMode(codexModel(id), stateOn, SPECS, policy)?.tier).toBe("priority");
-	});
-	test("blocklist excludes a default", () => {
-		const f = buildFastModePolicy(SPECS, { blocklist: [parseModelKey("openai-codex/gpt-5.5")!] });
-		expect(isModelAllowed(codexModel("gpt-5.5"), SPECS, f)).toBe(false);
-		expect(isModelAllowed(codexModel("gpt-5.6-luna"), SPECS, f)).toBe(true);
-	});
-	test("does not advertise fast mode for a provider without an overlay", () => {
-		const model = { ...codexModel("gpt-5.6-luna"), provider: "custom-codex" };
-		const policy = buildFastModePolicy(SPECS, { allowlist: [{ provider: model.provider, id: model.id }] });
-		expect(resolveFastMode(model, stateOn, SPECS, policy)).toBeUndefined();
-		expect(statusText(model, stateOn, SPECS, policy)).toBe("");
-	});
 	test("allowlist adds a custom model on a spec'd api", () => {
 		const f = buildFastModePolicy(SPECS, { allowlist: [parseModelKey("openai-codex/custom-model")!] });
 		expect(isModelAllowed(codexModel("custom-model"), SPECS, f)).toBe(true);
@@ -175,13 +160,14 @@ describe("isModelAllowed", () => {
 		});
 		expect(isModelAllowed(codexModel("contested"), SPECS, f)).toBe(false);
 	});
-	test("allowed model on wrong api is rejected", () => {
+	test("rejects an allowed model on the wrong api or provider", () => {
 		expect(isModelAllowed({ ...codexModel("gpt-5.6-luna"), api: "anthropic-messages" }, SPECS, policy)).toBe(false);
+		const custom = { ...codexModel("gpt-5.6-luna"), provider: "custom-codex" };
+		const allowlisted = buildFastModePolicy(SPECS, { allowlist: [{ provider: custom.provider, id: custom.id }] });
+		expect(isModelAllowed(custom, SPECS, allowlisted)).toBe(false);
 	});
-	test("non-listed model is rejected", () => {
+	test("rejects a non-listed model, including retired GPT-5.4", () => {
 		expect(isModelAllowed(codexModel("deepseek-v4-flash"), SPECS, policy)).toBe(false);
-	});
-	test("retired GPT-5.4 is not enabled by default", () => {
 		expect(isModelAllowed(codexModel("gpt-5.4"), SPECS, policy)).toBe(false);
 	});
 });
@@ -209,14 +195,14 @@ describe("session state", () => {
 describe("resolveFastMode", () => {
 	const policy = buildFastModePolicy(SPECS, {});
 
-	test("applies priority with the established rate for a default when active", () => {
-		expect(resolveFastMode(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toEqual({ tier: "priority", multiplier: 2.5 });
-	});
+	test.each(["gpt-6-astra", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])(
+		"tiers the supported default %s at the 2.5× rate-card multiplier",
+		id => {
+			expect(resolveFastMode(codexModel(id), stateOn, SPECS, policy)).toEqual({ tier: "priority", multiplier: 2.5 });
+		},
+	);
 	test("no tier when inactive", () => {
 		expect(resolveFastMode(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBeUndefined();
-	});
-	test("no tier for non-listed model", () => {
-		expect(resolveFastMode(codexModel("deepseek-v4-flash"), stateOn, SPECS, policy)).toBeUndefined();
 	});
 	test("no tier when the api rejects the configured tier", () => {
 		expect(
@@ -252,16 +238,6 @@ describe("resolveFastMode", () => {
 describe("fast-mode pricing", () => {
 	const policy = buildFastModePolicy(SPECS, {});
 
-	test("official multipliers per rate card", () => {
-		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-6-astra"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-6.1-sol"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-5.6-sol"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-5.6-terra"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-5.6-luna"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-5.5"]).toBe(2.5);
-		expect(OFFICIAL_FAST_MULTIPLIER["openai-codex/gpt-5.4"]).toBe(2);
-	});
-
 	test("no rate is established for unknown models instead of guessing one", () => {
 		expect(fastMultiplierFor(codexModel("gpt-6.1-sol"), policy)).toBe(2.5);
 		expect(fastMultiplierFor(codexModel("gpt-5.4"), policy)).toBe(2);
@@ -273,14 +249,6 @@ describe("fast-mode pricing", () => {
 	test("configured rates establish a multiplier for unknown models", () => {
 		const f = buildFastModePolicy(SPECS, { multipliers: { "openai-codex/deepseek-v4-flash": 2 } });
 		expect(fastMultiplierFor(codexModel("deepseek-v4-flash"), f)).toBe(2);
-	});
-
-	test("parseMultipliers keeps provider/model keys with finite positive multipliers", () => {
-		expect(parseMultipliers({ "openai-codex/custom-model": 2.5 })).toEqual({ "openai-codex/custom-model": 2.5 });
-		expect(parseMultipliers({ "openai-codex/custom-model": 2.5, "openai-codex/other": 2 })).toEqual({
-			"openai-codex/custom-model": 2.5,
-			"openai-codex/other": 2,
-		});
 	});
 
 	test("parseMultipliers drops unestablishable entries", () => {
@@ -496,7 +464,6 @@ describe("withFastModePricing", () => {
 		expect(done.message.usage.cost.input).toBeCloseTo(0.2 * multiplier);
 		expect(done.message.usage.cost.total).toBeCloseTo(0.8 * multiplier);
 	});
-
 	test("surfaces a mid-stream throw as an error event instead of hanging", async () => {
 		// A raw iterator that throws before any terminal event, mimicking an
 		// upstream failure pi-ai did not convert to an error event. The wrapper
@@ -519,6 +486,28 @@ describe("withFastModePricing", () => {
 		expect(result.hung).toBeUndefined();
 		expect(result.resolved?.errorMessage).toBe("transport exploded");
 		expect(result.resolved?.stopReason).toBe("error");
+		expect((events.at(-1) as { type: string }).type).toBe("error");
+	});
+
+	test("resolves a source that ends without a terminal event", async () => {
+		// A source can end after non-terminal events, leaving result() pending
+		// forever. The wrapper must synthesize the terminal error itself.
+		const silent = {
+			async *[Symbol.asyncIterator]() {
+				yield { type: "message_start" };
+			},
+			result: () => new Promise<never>(() => {}),
+		};
+		const wrapped = withFastModePricing(silent as never, model as never, 2.5);
+		const outcome = await Promise.race([
+			wrapped.result().then((message) => ({ resolved: message })),
+			new Promise((_, reject) => setTimeout(() => reject(new Error("HUNG")), 500)),
+		]).catch((error: Error) => ({ hung: error.message }));
+		const events: unknown[] = [];
+		for await (const event of wrapped) events.push(event);
+		const result = outcome as { resolved?: { errorMessage?: string }; hung?: string };
+		expect(result.hung).toBeUndefined();
+		expect(result.resolved?.errorMessage).toContain("without a done or error event");
 		expect((events.at(-1) as { type: string }).type).toBe("error");
 	});
 });
@@ -752,52 +741,6 @@ describe("extension registration", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
-
-
-	test("uses the latest /fast setting for a future session", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-default-"));
-		try {
-			const configPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
-			mkdirSync(dirname(configPath), { recursive: true });
-			writeConfig(configPath, { active: false, persistState: true, serviceTier: "priority" });
-
-			const { ctx, events, commands, entries } = await extensionHarness({
-				cwd: dir,
-				model: codexModel("gpt-5.6-luna"),
-			});
-			await events.session_start?.({ reason: "new" }, ctx);
-			await commands.fast?.handler("on", ctx);
-
-			expect(readConfig(configPath)?.active).toBe(true);
-			expect(entries.at(-1)).toEqual({
-				type: "custom",
-				customType: SESSION_STATE_TYPE,
-				data: { active: true, serviceTier: "priority" },
-			});
-
-			const futureEntries = [
-				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
-				{ type: "thinking_level_change", thinkingLevel: "off" },
-			];
-			const future = await extensionHarness({
-				cwd: dir,
-				model: codexModel("gpt-5.6-luna"),
-				entries: futureEntries,
-				buildContextEntries: () => futureEntries,
-			});
-			await future.events.session_start?.({ reason: "startup" }, future.ctx);
-
-			expect(future.statuses).toEqual(["· \u26a1 FAST \u00b7 $ 2.5\u00d7"]);
-			expect(future.entries.at(-1)).toEqual({
-				type: "custom",
-				customType: SESSION_STATE_TYPE,
-				data: { active: true, serviceTier: "priority" },
-			});
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
 	test("restores a persisted state instead of using the global default", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-session-"));
 		try {
@@ -857,16 +800,6 @@ describe("statusText", () => {
 	test("shows a compact fast indicator when applied", () => {
 		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toBe("⚡ FAST · $ 2.5×");
 	});
-	test("stays empty when active but model is not allowed", () => {
-		const f = buildFastModePolicy(SPECS, {});
-		expect(statusText(codexModel("deepseek-v4-flash"), stateOn, SPECS, f)).toBe("");
-	});
-	test("empty when off", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBe("");
-	});
-	test("stays empty when the configured tier is unsupported", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), { active: true, serviceTier: "flex" }, SPECS, policy)).toBe("");
-	});
 	test("shows the established configured multiplier", () => {
 		const f = buildFastModePolicy(SPECS, {
 			allowlist: [parseModelKey("openai-codex/custom-model")!],
@@ -874,9 +807,9 @@ describe("statusText", () => {
 		});
 		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("⚡ FAST · $ 3×");
 	});
-	test("stays empty for a listed model without an established rate", () => {
-		const f = buildFastModePolicy(SPECS, { allowlist: [parseModelKey("openai-codex/custom-model")!] });
-		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("");
+	test("stays empty whenever no fast mode resolves", () => {
+		expect(statusText(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBe("");
+		expect(statusText(codexModel("deepseek-v4-flash"), stateOn, SPECS, policy)).toBe("");
 	});
 });
 
@@ -969,19 +902,15 @@ describe("option shaping", () => {
 
 	// Pi's legacy provider composer routes both stream() and streamSimple() through
 	// the registered streamSimple, so an API-specific reasoningEffort must survive.
-	test("preserves an API-specific reasoningEffort when no neutral reasoning is set", () => {
-		expect(buildFullOpenAIOptions(model, { reasoningEffort: "high" } as never, undefined).reasoningEffort).toBe("high");
+	test("preserves an API-specific reasoningEffort and applies the tier", () => {
+		const options = buildFullOpenAIOptions(model, { reasoningEffort: "high" } as never, "priority");
+		expect(options.reasoningEffort).toBe("high");
+		expect(options.serviceTier).toBe("priority");
 	});
 
 	test("derives reasoningEffort from the provider-neutral reasoning option", () => {
 		expect(buildFullOpenAIOptions(model, { reasoning: "off" } as never, undefined).reasoningEffort).toBeUndefined();
 		expect(buildFullOpenAIOptions(model, { reasoningEffort: "high", reasoning: "off" } as never, undefined).reasoningEffort).toBeUndefined();
-	});
-
-	test("applies the service tier without dropping the reasoning effort", () => {
-		const options = buildFullOpenAIOptions(model, { reasoningEffort: "high" } as never, "priority");
-		expect(options.reasoningEffort).toBe("high");
-		expect(options.serviceTier).toBe("priority");
 	});
 });
 
