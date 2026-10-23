@@ -294,31 +294,21 @@ export function readConfig(path: string): ConfigFile | undefined {
 }
 
 export function writeConfig(path: string, config: ConfigFile): void {
-	try {
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		console.warn(`[${STATUS_KEY}] Failed to write ${path}: ${message}`);
-	}
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
 /**
  * Config payload for persisting the `/fast` toggle. Unknown file keys are
  * preserved verbatim so a toggle never strips keys this version does not
- * model; normalization still happens on the read path. Falls back to the
- * normalized config when the file is missing or unparseable.
+ * model; normalization still happens on the read path. Refuse to overwrite
+ * malformed or unreadable configuration.
  */
 function configForWrite(path: string, active: boolean): ConfigFile {
-	try {
-		if (existsSync(path)) {
-			const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-			if (isRecord(parsed)) return { ...parsed, active } as ConfigFile;
-		}
-	} catch {
-		// Fall through to the normalized config below.
-	}
-	return { ...readConfig(path), active };
+	if (!existsSync(path)) return { active };
+	const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+	if (!isRecord(parsed)) throw new Error("Configuration must be a JSON object.");
+	return { ...parsed, active } as ConfigFile;
 }
 
 export function resolveConfig(cwd: string, agentDir = getAgentDir(), trusted = true): ResolvedConfig {
@@ -756,63 +746,64 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		ctx.ui.setStatus(STATUS_KEY, text ? `· ${text}` : undefined);
 	}
 
-	function supportedListText(policy: FastModePolicy): string {
-		const all = [...policy.defaults, ...policy.allowlist, ...policy.blocklist];
-		const keys = [...new Set(all.map((model) => `${model.provider}/${model.id}`))];
-		return keys.join(", ") || "none";
-	}
-
-	function notifyStatus(ctx: ExtensionContext): void {
+	function notifyStatus(ctx: ExtensionContext, reason: "toggle" | "status" | "startup"): void {
 		const policy = buildFastModePolicy(SPECS, config);
 		const resolution = resolveFastMode(ctx.model, state, SPECS, policy);
 		const modelKey = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
+		const multiplier = ctx.model && isModelAllowed(ctx.model, SPECS, policy) ? fastMultiplierFor(ctx.model, policy) : undefined;
+		const basis = policy.billingBasis === "credits" ? "credits/Enterprise PAYG" : "included quota";
+		const source = policy.multipliers[modelKey] === undefined ? "rate card" : "configured override";
+		const detail = reason === "status" ? ` Estimate basis: ${basis}${multiplier === undefined ? "" : `; ${multiplier}× Fast multiplier (${source})`}.` : "";
+		const notify = (message: string, level: "info" | "warning" = "info") => ctx.ui.notify(message + detail, level);
 		if (resolution && !overlay?.inDispatchPath()) {
-			ctx.ui.notify(
+			notify(
 				`Fast mode is on, but inactive: another provider or stream owns ${ctx.model?.provider}. This extension is not applying a priority tier or fast-mode pricing. Disable the competing provider extension and reload to use /fast.`,
 				"warning",
 			);
 			return;
 		}
 		if (resolution) {
-			ctx.ui.notify(
-				`Fast mode: ${resolution.tier} service tier for ${modelKey}. Estimate basis: ${resolution.billingBasis === "credits" ? "credits/Enterprise PAYG" : "included quota"}; ${resolution.multiplier}× Fast multiplier (${resolution.multiplierSource === "configured" ? "configured override" : "rate card"}).`,
-				"info",
-			);
+			if (reason !== "startup") notify(reason === "status" ? `Fast mode: ${resolution.tier} service tier for ${modelKey}.` : "Fast mode on.");
 			return;
 		}
 		if (state.active) {
 			const tiers = ctx.model ? getModelsForApi(SPECS, ctx.model.api) : [];
 			if (ctx.model && tiers.length > 0 && !tiers.includes(state.serviceTier)) {
-				ctx.ui.notify(
+				notify(
 					`Fast mode is on, but the configured service tier "${state.serviceTier}" is not accepted by ${ctx.model.api}. Supported: ${tiers.join(", ")}.`,
 					"warning",
 				);
 				return;
 			}
 			if (ctx.model && isModelAllowed(ctx.model, SPECS, policy) && fastMultiplierFor(ctx.model, policy) === undefined) {
-				ctx.ui.notify(
+				notify(
 					`Fast mode is on, but ${modelKey} has no established fast-mode rate for ${policy.billingBasis}, so priority was not requested and cost would be guesswork. Verify the model's fast-mode multiplier on the OpenAI Codex rate card, then set "multipliers": { "${modelKey}": <multiplier> } in ${config.configPath}.`,
 					"warning",
 				);
 				return;
 			}
-			ctx.ui.notify(
-				`Fast mode is on, but ${modelKey} is not tierable (missing API spec, not on the default/allowlist, or blocked). Mentioned models: ${supportedListText(policy)}.`,
-				"warning",
-			);
+			if (reason !== "startup") notify(`Fast mode is on, but unavailable for ${modelKey}.`);
 			return;
 		}
-		ctx.ui.notify(`Fast mode is off. Current model: ${modelKey}.`, "info");
+		if (reason !== "startup") notify(reason === "status" ? `Fast mode is off. Current model: ${modelKey}.` : "Fast mode off.");
 	}
 
 	function setActive(ctx: ExtensionContext, active: boolean): void {
+		const previousConfig = config;
 		refreshConfig(ctx);
+		try {
+			writeConfig(config.configPath, configForWrite(config.configPath, active));
+		} catch {
+			const path = config.configPath;
+			config = previousConfig;
+			ctx.ui.notify(`Fast mode unchanged: could not save ${path}. Check its JSON and file permissions.`, "error");
+			return;
+		}
 		state = { ...state, active };
 		appendSessionState();
-		writeConfig(config.configPath, configForWrite(config.configPath, active));
 		refreshConfig(ctx);
 		updateStatus(ctx);
-		notifyStatus(ctx);
+		notifyStatus(ctx, "toggle");
 	}
 
 	pi.registerCommand(COMMAND_FAST, {
@@ -830,7 +821,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 			if (arg === "status") {
 				refreshConfig(ctx);
 				updateStatus(ctx);
-				return notifyStatus(ctx);
+				return notifyStatus(ctx, "status");
 			}
 			ctx.ui.notify("Usage: /fast [on|off|status]", "error");
 		},
@@ -840,7 +831,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		refreshConfig(ctx);
 		restoreSessionState(ctx, event.reason);
 		updateStatus(ctx);
-		if (state.active) notifyStatus(ctx);
+		if (state.active) notifyStatus(ctx, "startup");
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {

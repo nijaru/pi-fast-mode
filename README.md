@@ -21,7 +21,7 @@ Restart pi. Development checks target Pi 1.4.0. Requires pi / `@earendil-works/p
 /fast status           show current state and the active model
 ```
 
-Fast mode is off by default. When enabled, supported, and installed without a provider conflict, the footer shows `⚡ FAST · 2.5×` (or the applicable multiplier). `/fast status` explains the configured billing basis and any per-model override. Requests only change for listed OpenAI Codex models with an established Fast rate; all other models and providers are untouched.
+Fast mode is off by default. Normal session startup is silent; toggles give a short confirmation, while `/fast status` gives billing details. Actionable configuration or provider conflicts still warn. When enabled, supported, and installed without a provider conflict, the footer shows `⚡ FAST · 2.5×` (or the applicable multiplier). `/fast status` explains the configured billing basis and any per-model override. Requests only change for listed OpenAI Codex models with an established Fast rate; all other models and providers are untouched.
 
 ## Supported models
 
@@ -47,7 +47,7 @@ Config resolves project-over-global and provides defaults for new sessions:
 
 Untrusted project configuration is neither read nor written. The billing basis chooses estimate rates, not a different service tier, model, account plan, or Fast on/off state. If the chosen basis has no established rate, the request stays untiered.
 
-Fast-mode state is recorded in each session's history, like model changes. `/fast`, `/fast on`, and `/fast off` update the current session and the `active` default for future new sessions. Resuming a session restores its own state, so an older session can remain independent of the latest default. Existing sessions without recorded state stay off and are given an explicit state when opened; only new or empty sessions inherit the current `active` default. The command writes to the project config when present, otherwise the global config. With `persistState: false`, saved session state is ignored, but the current setting still updates the default for new sessions.
+Fast-mode state is recorded in each session's history, like model changes. `/fast`, `/fast on`, and `/fast off` update the current session and the `active` default for future new sessions. Resuming a session restores its own state, so an older session can remain independent of the latest default. Existing sessions without recorded state stay off and are given an explicit state when opened; only new or empty sessions inherit the current `active` default. The command writes to the project config when present, otherwise the global config. It refuses to overwrite malformed or unreadable configuration; a failed save reports an error without changing the session. With `persistState: false`, saved session state is ignored, but the current setting still updates the default for new sessions.
 
 ```json
 {

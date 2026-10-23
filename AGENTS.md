@@ -2,7 +2,7 @@
 
 Toggle OpenAI Codex fast mode (`service_tier: "priority"`) in pi with correct footer cost accounting.
 
-Fast mode serves the currently supported GPT-6 Astra / GPT-6.1 Sol / GPT-5.6 / GPT-5.5 Codex models at higher speed for a credit multiplier. This extension sends `service_tier: "priority"` on supported OpenAI Codex requests and fixes pi's displayed cost for GPT-5.6 (pi's built-in multiplier under-reports it at 2x; the official rate card is 2.5x).
+The extension requests `service_tier: "priority"` only for supported Codex models with an established rate. Its local cost estimate uses the configured billing basis and verified rate card or explicit per-model multiplier; it does not infer the account plan.
 
 ## Stack
 

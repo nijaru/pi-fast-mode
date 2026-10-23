@@ -663,6 +663,7 @@ describe("extension registration", () => {
 			});
 			await events.session_start?.({}, ctx);
 			await commands.fast?.handler("on", ctx);
+			expect(notices.at(-1)?.message).toBe("Fast mode on.");
 			await commands.fast?.handler("status", ctx);
 
 			expect(statuses).toEqual([undefined, "· ⚡ FAST · 2.5×", "· ⚡ FAST · 2.5×"]);
@@ -673,6 +674,31 @@ describe("extension registration", () => {
 		}
 	});
 
+	test.each([codexModel("gpt-6-luna"), { ...codexModel("reasoner"), provider: "deepseek" }])("normal active startup stays quiet; explicit status explains the billing basis (%j)", async (model) => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-quiet-"));
+		try {
+			const path = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			writeConfig(path, { active: true, persistState: false, billingBasis: "credits" });
+			const f = await extensionHarness({ cwd: dir, model });
+			await f.events.session_start!({}, f.ctx);
+			expect(f.notices).toEqual([]);
+			await f.commands.fast!.handler("status", f.ctx);
+			expect(f.notices.at(-1)?.level).toBe("info");
+			expect(f.notices.at(-1)?.message).toContain("credits/Enterprise PAYG");
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+	test("status reports configured billing and rate overrides even while off", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-off-"));
+		try {
+			writeConfig(join(dir, ".pi", "extensions", CONFIG_BASENAME), { active: false, billingBasis: "credits", multipliers: { "openai-codex/gpt-6-luna": 3 } });
+			const f = await extensionHarness({ cwd: dir, model: codexModel("gpt-6-luna") });
+			await f.events.session_start!({}, f.ctx);
+			await f.commands.fast!.handler("status", f.ctx);
+			expect(f.notices.at(-1)?.message).toContain("off");
+			expect(f.notices.at(-1)?.message).toContain("credits/Enterprise PAYG");
+			expect(f.notices.at(-1)?.message).toContain("3× Fast multiplier (configured override)");
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
 	test("status distinguishes an unsupported configured tier from an unlisted model", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-tier-status-"));
 		try {
@@ -899,6 +925,37 @@ describe("session_tree", () => {
 });
 
 describe("config write preservation", () => {
+	test.each(["malformed", "nonobject", "unwritable"])("refuses a %s config without changing session state", async (kind) => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-preserve-"));
+		try {
+			const path = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			mkdirSync(dirname(path), { recursive: true });
+			const content = kind === "malformed" ? '{ "multipliers": ' : "[]";
+			if (kind === "unwritable") mkdirSync(path); else writeFileSync(path, content);
+			const f = await extensionHarness({ cwd: dir, model: codexModel("gpt-6-luna") });
+			await f.events.session_start!({}, f.ctx);
+			const before = f.entries.length;
+			await f.commands.fast!.handler("on", f.ctx);
+			expect(f.entries).toHaveLength(before);
+			expect(f.statuses.at(-1)).toBeUndefined();
+			expect(f.notices.at(-1)?.level).toBe("error");
+			if (kind !== "unwritable") expect(readFileSync(path, "utf8")).toBe(content);
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+	test("a failed toggle preserves the current eligibility policy", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-policy-"));
+		try {
+			const path = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			writeConfig(path, { active: true, persistState: false, blocklist: ["openai-codex/gpt-6-luna"] });
+			const f = await extensionHarness({ cwd: dir, model: codexModel("gpt-6-luna") });
+			await f.events.session_start!({}, f.ctx);
+			writeFileSync(path, "{broken");
+			await f.commands.fast!.handler("off", f.ctx);
+			await f.events.turn_start!({}, f.ctx);
+			expect(f.notices.at(-1)?.level).toBe("error");
+			expect(f.statuses.at(-1)).toBeUndefined();
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
 	test("/fast preserves unknown config keys", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-write-"));
 		try {
