@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanupSessionResources, createAssistantMessageEventStream, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { cleanupSessionResources, createAssistantMessageEventStream, fauxAssistantMessage, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import piFastMode, {
 	buildFullOpenAIOptions,
@@ -464,52 +464,29 @@ describe("withFastModePricing", () => {
 		expect(done.message.usage.cost.input).toBeCloseTo(0.2 * multiplier);
 		expect(done.message.usage.cost.total).toBeCloseTo(0.8 * multiplier);
 	});
-	test("surfaces a mid-stream throw as an error event instead of hanging", async () => {
-		// A raw iterator that throws before any terminal event, mimicking an
-		// upstream failure pi-ai did not convert to an error event. The wrapper
-		// must still resolve result() with an AssistantMessage-shaped error.
-		const throwing = {
+	test.each([
+		{ source: "throw", error: "transport exploded" },
+		{ source: "end", error: "Stream ended without a done or error event" },
+	])("settles a source that terminates by $source without a terminal event", async ({ source, error }) => {
+		const progress = { type: "start" as const, partial: fauxAssistantMessage("partial") };
+		const raw = {
 			async *[Symbol.asyncIterator]() {
-				yield { type: "message_start" };
-				throw new Error("transport exploded");
+				yield progress;
+				if (source === "throw") throw new Error(error);
 			},
 			result: () => new Promise<never>(() => {}),
 		};
-		const wrapped = withFastModePricing(throwing as never, model as never, 2.5);
-		const events: unknown[] = [];
-		const outcome = await Promise.race([
-			wrapped.result().then((message) => ({ resolved: message })),
-			new Promise((_, reject) => setTimeout(() => reject(new Error("HUNG")), 500)),
-		]).catch((error: Error) => ({ hung: error.message }));
+		const wrapped = withFastModePricing(raw as never, model as never, 2.5);
+		// The test runner owns the timeout; a second racing timer only hides
+		// which promise hung and remains pending even on successful runs.
+		const result = await wrapped.result();
+		const events = [];
 		for await (const event of wrapped) events.push(event);
-		const result = outcome as { resolved?: { errorMessage?: string; stopReason?: string }; hung?: string };
-		expect(result.hung).toBeUndefined();
-		expect(result.resolved?.errorMessage).toBe("transport exploded");
-		expect(result.resolved?.stopReason).toBe("error");
-		expect((events.at(-1) as { type: string }).type).toBe("error");
-	});
-
-	test("resolves a source that ends without a terminal event", async () => {
-		// A source can end after non-terminal events, leaving result() pending
-		// forever. The wrapper must synthesize the terminal error itself.
-		const silent = {
-			async *[Symbol.asyncIterator]() {
-				yield { type: "message_start" };
-			},
-			result: () => new Promise<never>(() => {}),
-		};
-		const wrapped = withFastModePricing(silent as never, model as never, 2.5);
-		const outcome = await Promise.race([
-			wrapped.result().then((message) => ({ resolved: message })),
-			new Promise((_, reject) => setTimeout(() => reject(new Error("HUNG")), 500)),
-		]).catch((error: Error) => ({ hung: error.message }));
-		const events: unknown[] = [];
-		for await (const event of wrapped) events.push(event);
-		const result = outcome as { resolved?: { errorMessage?: string }; hung?: string };
-		expect(result.hung).toBeUndefined();
-		expect(result.resolved?.errorMessage).toContain("without a done or error event");
-		expect((events.at(-1) as { type: string }).type).toBe("error");
-	});
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe(error);
+		expect(events[0]).toEqual(progress);
+		expect(events.at(-1)?.type).toBe("error");
+	}, 1000);
 });
 
 /** Send one request through the overlaid Codex provider and capture the wire body. */
