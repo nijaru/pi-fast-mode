@@ -21,7 +21,7 @@ Restart pi. Development checks target Pi 1.4.0. Requires pi / `@earendil-works/p
 /fast status           show current state and the active model
 ```
 
-Fast mode is off by default. When enabled, supported, and installed without a provider conflict, the footer shows `⚡ FAST · quota 2.5×` or `⚡ FAST · credits 2×`. A per-model override shows `⚡ FAST · override 3×`; `/fast status` names its configured basis and source. Requests only change for listed OpenAI Codex models with an established Fast rate; all other models and providers are untouched.
+Fast mode is off by default. When enabled, supported, and installed without a provider conflict, the footer shows `⚡ FAST · 2.5×` (or the applicable multiplier). `/fast status` explains the configured billing basis and any per-model override. Requests only change for listed OpenAI Codex models with an established Fast rate; all other models and providers are untouched.
 
 ## Supported models
 

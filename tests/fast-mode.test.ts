@@ -665,7 +665,7 @@ describe("extension registration", () => {
 			await commands.fast?.handler("on", ctx);
 			await commands.fast?.handler("status", ctx);
 
-			expect(statuses).toEqual([undefined, "· ⚡ FAST · quota 2.5×", "· ⚡ FAST · quota 2.5×"]);
+			expect(statuses).toEqual([undefined, "· ⚡ FAST · 2.5×", "· ⚡ FAST · 2.5×"]);
 			expect(notices.at(-1)?.message).toContain("Fast mode: priority service tier");
 			expect(readConfig(configPath)?.active).toBe(true);
 		} finally {
@@ -769,7 +769,7 @@ describe("extension registration", () => {
 			});
 			await events.session_start?.({ reason: "startup" }, ctx);
 
-			expect(statuses).toEqual(["· ⚡ FAST · quota 2.5×"]);
+			expect(statuses).toEqual(["· ⚡ FAST · 2.5×"]);
 			expect(entries).toEqual([
 				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
@@ -796,7 +796,7 @@ describe("extension registration", () => {
 			});
 			await events.session_start?.({ reason: "resume" }, ctx);
 
-			expect(statuses).toEqual(["· ⚡ FAST · quota 2.5×"]);
+			expect(statuses).toEqual(["· ⚡ FAST · 2.5×"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -836,17 +836,17 @@ describe("extension registration", () => {
 describe("statusText", () => {
 	const policy = buildFastModePolicy(SPECS, {});
 	test("shows a compact fast indicator when applied", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toBe("⚡ FAST · quota 2.5×");
+		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toBe("⚡ FAST · 2.5×");
 		expect(statusText(codexModel("gpt-6-luna"), stateOn, SPECS, buildFastModePolicy(SPECS, {
 			billingBasis: "credits",
-		}))).toBe("⚡ FAST · credits 2×");
+		}))).toBe("⚡ FAST · 2×");
 	});
 	test("shows the established configured multiplier", () => {
 		const f = buildFastModePolicy(SPECS, {
 			allowlist: [parseModelKey("openai-codex/custom-model")!],
 			multipliers: { "openai-codex/custom-model": 3 },
 		});
-		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("⚡ FAST · override 3×");
+		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("⚡ FAST · 3×");
 	});
 	test("stays empty whenever no fast mode resolves", () => {
 		expect(statusText(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBe("");
@@ -871,7 +871,7 @@ describe("session_tree", () => {
 			});
 			await events.session_tree?.({}, ctx);
 
-			expect(statuses).toEqual(["· ⚡ FAST · quota 2.5×"]);
+			expect(statuses).toEqual(["· ⚡ FAST · 2.5×"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

@@ -259,7 +259,7 @@ describe("ModelRuntime provider ownership", () => {
 		expect(message.usage.input).toBe(1_000_000);
 		await f.session.prompt("/fast status");
 		expect(f.session.getSessionStats().cost).toBeCloseTo(0.8 * multiplier * 1.3);
-		expect(f.statuses.get(STATUS_KEY)).toContain(billingBasis === "credits" ? "credits 2×" : "quota 2.5×");
+		expect(f.statuses.get(STATUS_KEY)).toBe(`· ⚡ FAST · ${multiplier}×`);
 		expect(f.notices.at(-1)).toContain(billingBasis === "credits" ? "credits/Enterprise PAYG" : "included quota");
 		expect(f.errors).toEqual([]);
 	});

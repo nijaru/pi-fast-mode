@@ -587,8 +587,7 @@ export function statusText(
 		// still explain why fast mode did not apply when explicitly requested.
 		return "";
 	}
-	const label = resolution.multiplierSource === "configured" ? "override" : resolution.billingBasis === "credits" ? "credits" : "quota";
-	return `⚡ FAST · ${label} ${resolution.multiplier}×`;
+	return `⚡ FAST · ${resolution.multiplier}×`;
 }
 
 /** Plain request policy only: registered streams never retain extension contexts. */
