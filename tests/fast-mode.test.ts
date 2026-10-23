@@ -137,6 +137,7 @@ describe("config", () => {
 			const config = resolveConfig(dir, join(dir, "home", ".pi", "agent"));
 			expect(config.active).toBe(false);
 			expect(config.serviceTier).toBe("priority");
+			expect(config.billingBasis).toBe("included-quota");
 			expect(config.allowlist).toEqual([]);
 			expect(config.blocklist).toEqual([]);
 			expect(config.multipliers).toEqual({});
@@ -195,12 +196,31 @@ describe("session state", () => {
 describe("resolveFastMode", () => {
 	const policy = buildFastModePolicy(SPECS, {});
 
-	test.each(["gpt-6-astra", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"])(
-		"tiers the supported default %s at the 2.5× rate-card multiplier",
-		id => {
-			expect(resolveFastMode(codexModel(id), stateOn, SPECS, policy)).toEqual({ tier: "priority", multiplier: 2.5 });
-		},
-	);
+	test.each(["gpt-6-luna", "gpt-6-sol"])("tiers the new default %s on the legacy included-quota basis", id => {
+		expect(resolveFastMode(codexModel(id), stateOn, SPECS, policy)).toEqual({
+			tier: "priority", multiplier: 2.5, billingBasis: "included-quota", multiplierSource: "official",
+		});
+	});
+	test.each([["gpt-5.5", 2.5], ["gpt-5.4", 2]] as const)("retired %s requires explicit allowlisting but retains its historical rate", (id, multiplier) => {
+		const model = codexModel(id);
+		expect(resolveFastMode(model, stateOn, SPECS, policy)).toBeUndefined();
+		const explicit = buildFastModePolicy(SPECS, { allowlist: [model] });
+		expect(resolveFastMode(model, stateOn, SPECS, explicit)?.multiplier).toBe(multiplier);
+	});
+	test("billing basis changes the estimate, not the tier or activation", () => {
+		const credits = buildFastModePolicy(SPECS, { billingBasis: "credits" });
+		const model = codexModel("gpt-5.6-luna");
+		expect(resolveFastMode(model, stateOn, SPECS, credits)).toEqual({
+			tier: "priority", multiplier: 2, billingBasis: "credits", multiplierSource: "official",
+		});
+		expect(resolveFastMode(model, stateOff, SPECS, credits)).toBeUndefined();
+		const unknown = codexModel("unknown");
+		expect(resolveFastMode(unknown, stateOn, SPECS, buildFastModePolicy(SPECS, {
+			billingBasis: "credits", allowlist: [unknown],
+		}))).toBeUndefined();
+		// A historical included-quota rate is not evidence of a credits rate.
+		expect(fastMultiplierFor(codexModel("gpt-5.4"), credits)).toBeUndefined();
+	});
 	test("no tier when inactive", () => {
 		expect(resolveFastMode(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBeUndefined();
 	});
@@ -223,11 +243,13 @@ describe("resolveFastMode", () => {
 			allowlist: [parseModelKey("openai-codex/custom-model")!],
 			multipliers: { "openai-codex/custom-model": 3 },
 		});
-		expect(resolveFastMode(codexModel("custom-model"), stateOn, SPECS, f)).toEqual({ tier: "priority", multiplier: 3 });
+		expect(resolveFastMode(codexModel("custom-model"), stateOn, SPECS, f)).toMatchObject({ tier: "priority", multiplier: 3, multiplierSource: "configured" });
 	});
-	test("a configured rate overrides the built-in rate card", () => {
-		const f = buildFastModePolicy(SPECS, { multipliers: { "openai-codex/gpt-5.6-luna": 2 } });
-		expect(resolveFastMode(codexModel("gpt-5.6-luna"), stateOn, SPECS, f)?.multiplier).toBe(2);
+	test.each(["included-quota", "credits"] as const)("a configured rate overrides %s, rather than multiplying it", billingBasis => {
+		const f = buildFastModePolicy(SPECS, { billingBasis, multipliers: { "openai-codex/gpt-6-luna": 3 } });
+		expect(resolveFastMode(codexModel("gpt-6-luna"), stateOn, SPECS, f)).toMatchObject({
+			multiplier: 3, billingBasis, multiplierSource: "configured",
+		});
 	});
 	test("a rate alone does not tier a non-listed model", () => {
 		const f = buildFastModePolicy(SPECS, { multipliers: { "openai-codex/deepseek-v4-flash": 2 } });
@@ -377,6 +399,23 @@ describe("config robustness", () => {
 		}
 	});
 
+	test("billing basis obeys project trust and per-key precedence; invalid values do not mask global config", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-"));
+		try {
+			const agentDir = join(dir, "agent");
+			writeConfig(join(agentDir, "extensions", CONFIG_BASENAME), { billingBasis: "credits" });
+			const projectPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
+			writeConfig(projectPath, { billingBasis: "included-quota" });
+			expect(resolveConfig(dir, agentDir).billingBasis).toBe("included-quota");
+			expect(resolveConfig(dir, agentDir, false).billingBasis).toBe("credits");
+			writeConfig(projectPath, { billingBasis: "auto" as never });
+			expect(readConfig(projectPath)?.billingBasis).toBeUndefined();
+			expect(resolveConfig(dir, agentDir).billingBasis).toBe("credits");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("project multipliers replace the global map", () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-"));
 		try {
@@ -463,6 +502,28 @@ describe("withFastModePricing", () => {
 		const done = events[0] as { message: { usage: { cost: { input: number; total: number } } } };
 		expect(done.message.usage.cost.input).toBeCloseTo(0.2 * multiplier);
 		expect(done.message.usage.cost.total).toBeCloseTo(0.8 * multiplier);
+	});
+	test("prices partial usage on cancellation without changing the aborted result", async () => {
+		const raw = createAssistantMessageEventStream();
+		const message = {
+			...fauxAssistantMessage("partial"), stopReason: "aborted" as const, errorMessage: "Request was aborted",
+			usage: {
+				input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 1_000_000,
+				cost: { input: 0.4, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.4 },
+			},
+		};
+		const terminal = { type: "error" as const, reason: "aborted" as const, error: message };
+		raw.push(terminal);
+		raw.end();
+		const wrapped = withFastModePricing(raw, model as never, 2.5);
+		const result = await wrapped.result();
+		const events = [];
+		for await (const event of wrapped) events.push(event);
+		expect(events).toEqual([terminal]);
+		expect(result).toBe(message);
+		expect(result.stopReason).toBe("aborted");
+		expect(result.usage.cost.total).toBeCloseTo(0.5);
+		expect(result.usage.input).toBe(1_000_000);
 	});
 	test.each([
 		{ source: "throw", error: "transport exploded" },
@@ -604,7 +665,7 @@ describe("extension registration", () => {
 			await commands.fast?.handler("on", ctx);
 			await commands.fast?.handler("status", ctx);
 
-			expect(statuses).toEqual([undefined, "· ⚡ FAST · $ 2.5×", "· ⚡ FAST · $ 2.5×"]);
+			expect(statuses).toEqual([undefined, "· ⚡ FAST · quota 2.5×", "· ⚡ FAST · quota 2.5×"]);
 			expect(notices.at(-1)?.message).toContain("Fast mode: priority service tier");
 			expect(readConfig(configPath)?.active).toBe(true);
 		} finally {
@@ -708,7 +769,7 @@ describe("extension registration", () => {
 			});
 			await events.session_start?.({ reason: "startup" }, ctx);
 
-			expect(statuses).toEqual(["· \u26a1 FAST \u00b7 $ 2.5\u00d7"]);
+			expect(statuses).toEqual(["· ⚡ FAST · quota 2.5×"]);
 			expect(entries).toEqual([
 				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
@@ -735,7 +796,7 @@ describe("extension registration", () => {
 			});
 			await events.session_start?.({ reason: "resume" }, ctx);
 
-			expect(statuses).toEqual(["· \u26a1 FAST \u00b7 $ 2.5\u00d7"]);
+			expect(statuses).toEqual(["· ⚡ FAST · quota 2.5×"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -775,14 +836,17 @@ describe("extension registration", () => {
 describe("statusText", () => {
 	const policy = buildFastModePolicy(SPECS, {});
 	test("shows a compact fast indicator when applied", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toBe("⚡ FAST · $ 2.5×");
+		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toBe("⚡ FAST · quota 2.5×");
+		expect(statusText(codexModel("gpt-6-luna"), stateOn, SPECS, buildFastModePolicy(SPECS, {
+			billingBasis: "credits",
+		}))).toBe("⚡ FAST · credits 2×");
 	});
 	test("shows the established configured multiplier", () => {
 		const f = buildFastModePolicy(SPECS, {
 			allowlist: [parseModelKey("openai-codex/custom-model")!],
 			multipliers: { "openai-codex/custom-model": 3 },
 		});
-		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("⚡ FAST · $ 3×");
+		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("⚡ FAST · override 3×");
 	});
 	test("stays empty whenever no fast mode resolves", () => {
 		expect(statusText(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBe("");
@@ -807,7 +871,7 @@ describe("session_tree", () => {
 			});
 			await events.session_tree?.({}, ctx);
 
-			expect(statuses).toEqual(["· \u26a1 FAST \u00b7 $ 2.5\u00d7"]);
+			expect(statuses).toEqual(["· ⚡ FAST · quota 2.5×"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -847,6 +911,7 @@ describe("config write preservation", () => {
 					persistState: false,
 					serviceTier: "priority",
 					note: "keep me",
+					billingBasis: "credits",
 					allowlist: ["openai-codex/custom", "bogus"],
 				}),
 			);
@@ -861,6 +926,7 @@ describe("config write preservation", () => {
 			const raw = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
 			expect(raw.active).toBe(true);
 			expect(raw.note).toBe("keep me");
+			expect(raw.billingBasis).toBe("credits");
 			expect(raw.allowlist).toEqual(["openai-codex/custom", "bogus"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

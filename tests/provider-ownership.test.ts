@@ -10,7 +10,7 @@ import {
 	createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager,
 	type ExtensionFactory, type ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
-import piFastMode, { CONFIG_BASENAME, STATUS_KEY, writeConfig } from "../extensions/index.ts";
+import piFastMode, { CONFIG_BASENAME, STATUS_KEY, writeConfig, type ConfigFile } from "../extensions/index.ts";
 
 const model: Model<"openai-codex-responses"> = {
 	id: "gpt-5.6-luna", name: "Luna", api: "openai-codex-responses", provider: "openai-codex",
@@ -38,12 +38,14 @@ function response(text: string) {
 }
 
 async function fixture(
-	factories: ExtensionFactory[], active = false,
+	factories: ExtensionFactory[], config: boolean | ConfigFile = false,
 	setup?: (runtime: ModelRuntime) => void, selectedModel = model,
 ) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-fast-ownership-"));
 	cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
-	writeConfig(join(cwd, ".pi", "extensions", CONFIG_BASENAME), { active, persistState: false });
+	writeConfig(join(cwd, ".pi", "extensions", CONFIG_BASENAME), {
+		persistState: false, ...(typeof config === "boolean" ? { active: config } : config),
+	});
 	const credentials = new InMemoryCredentialStore();
 	const token = `e30.${Buffer.from(JSON.stringify({
 		"https://api.openai.com/auth": { chatgpt_account_id: "test" },
@@ -53,7 +55,7 @@ async function fixture(
 	}));
 	const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
 	setup?.(runtime);
-	const settingsManager = SettingsManager.inMemory({ cacheWarming: "off" }, { projectTrusted: true });
+	const settingsManager = SettingsManager.inMemory({ cacheWarming: "off", transport: "sse" }, { projectTrusted: true });
 	const loader = new DefaultResourceLoader({
 		cwd, agentDir: join(cwd, "agent"), settingsManager, extensionFactories: factories,
 		noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
@@ -213,6 +215,52 @@ describe("ModelRuntime provider ownership", () => {
 		f.session.dispose(); // No session_shutdown event on this SDK path.
 		expect(f.registry.getRegisteredProviderConfig(model.provider)).toBeUndefined();
 		expect((await stockRequest(f.runtime, true)).body?.service_tier).toBeUndefined();
+		expect(f.errors).toEqual([]);
+	});
+
+	test.each([
+		["included-quota", 2.5], ["credits", 2],
+	] as const)("%s pricing precedes independent usage adjustments and survives session accounting", async (billingBasis, multiplier) => {
+		let body: Record<string, unknown> | undefined;
+		const server = Bun.serve({ port: 0, async fetch(request) {
+			const bytes = new Uint8Array(await request.arrayBuffer());
+			body = JSON.parse(new TextDecoder().decode(
+				request.headers.get("content-encoding") === "zstd" ? Bun.zstdDecompressSync(bytes) : bytes,
+			)) as Record<string, unknown>;
+			return new Response(`data: ${JSON.stringify({
+				type: "response.completed", response: {
+					id: "resp_basis", status: "completed", output: [], service_tier: "priority",
+					usage: { input_tokens: 1_000_000, output_tokens: 500_000, total_tokens: 1_500_000 },
+				},
+			})}\n\n`, { headers: { "content-type": "text/event-stream" } });
+		} });
+		cleanups.push(() => server.stop(true));
+		const beforeAdjustment: number[] = [];
+		const adjustUsage: ExtensionFactory = pi => {
+			pi.on("message_end", event => {
+				if (event.message.role !== "assistant") return;
+				const { cost } = event.message.usage;
+				beforeAdjustment.push(cost.total);
+				for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) cost[key] *= 1.3;
+			});
+		};
+		const f = await fixture([piFastMode, adjustUsage], { active: true, billingBasis }, undefined, {
+			...model, id: "gpt-6-luna", baseUrl: `http://127.0.0.1:${server.port}`,
+		});
+		await f.session.prompt("hello");
+		expect(body?.model).toBe("gpt-6-luna");
+		expect(body?.service_tier).toBe("priority");
+		expect(beforeAdjustment).toHaveLength(1);
+		expect(beforeAdjustment[0]).toBeCloseTo(0.8 * multiplier);
+		const message = f.session.messages.findLast(message => message.role === "assistant");
+		expect(message?.role).toBe("assistant");
+		if (message?.role !== "assistant") throw new Error("Missing assistant result");
+		expect(message.usage.cost.total).toBeCloseTo(0.8 * multiplier * 1.3);
+		expect(message.usage.input).toBe(1_000_000);
+		await f.session.prompt("/fast status");
+		expect(f.session.getSessionStats().cost).toBeCloseTo(0.8 * multiplier * 1.3);
+		expect(f.statuses.get(STATUS_KEY)).toContain(billingBasis === "credits" ? "credits 2×" : "quota 2.5×");
+		expect(f.notices.at(-1)).toContain(billingBasis === "credits" ? "credits/Enterprise PAYG" : "included quota");
 		expect(f.errors).toEqual([]);
 	});
 

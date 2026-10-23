@@ -3,11 +3,10 @@
  *
  * Registers an API-layer stream override for `openai-codex-responses` that
  * injects `service_tier: "priority"` into requests when fast mode is enabled
- * and the active model is on the supported set. pi-ai's built-in
+ * and the dispatched model is on the supported set. pi-ai's built-in
  * `openai-codex-responses` implementation turns `options.serviceTier` into the
- * `service_tier` request body field AND applies its priority cost multiplier,
- * so passing the option keeps both the request and the footer cost accounting
- * consistent.
+ * `service_tier` request body field. Its internal priority pricing is replaced
+ * with the explicit estimate policy below.
  *
  * Model selection is a three-part override, evaluated per request:
  *   supported = (built-in defaults ∪ allowlist) − blocklist
@@ -27,7 +26,7 @@
  * un-spec'd APIs are never touched, even if they appear in the allowlist.
  *
  * Cost accounting: the displayed cost is recomputed from raw token counts ×
- * model.cost × the official Codex rate-card multiplier on terminal stream
+ * model.cost × the configured-basis Codex multiplier on terminal stream
  * events. Codex cache writes are excluded because
  * the Codex rate card does not charge for them. This is independent of pi-ai's
  * internal service-tier multiplier table, so it stays correct if pi-ai changes
@@ -71,30 +70,37 @@ export const STATUS_KEY = "fast-mode";
 export const COMMAND_FAST = "fast";
 export const SESSION_STATE_TYPE = "fast-mode-state";
 
+export const BILLING_BASES = ["included-quota", "credits"] as const;
+export type BillingBasis = (typeof BILLING_BASES)[number];
+
 /**
- * Verified Codex fast-mode credit multipliers (OpenAI Codex rate card,
- * included-subscription basis), keyed `provider/model` like the configured
- * `multipliers` map. Retired `gpt-5.4` keeps its historical verified rate for
- * explicit allowlisting; nothing outside this table is ever priced by guess.
+ * Verified Fast rates by billing basis, keyed `provider/model`.
+ * https://learn.chatgpt.com/docs/agent-configuration/speed (2026-10-23).
+ * Credits includes purchased credits and Enterprise PAYG, not API-key billing.
+ * Retired 5.5/5.4 retain established historical rates for explicit allowlisting
+ * only. No credits-basis rate is established here for 5.4.
  */
-export const OFFICIAL_FAST_MULTIPLIER: Record<string, number> = {
-	"openai-codex/gpt-6-astra": 2.5,
-	"openai-codex/gpt-6.1-sol": 2.5,
-	"openai-codex/gpt-5.6-sol": 2.5,
-	"openai-codex/gpt-5.6-terra": 2.5,
-	"openai-codex/gpt-5.6-luna": 2.5,
-	"openai-codex/gpt-5.5": 2.5,
-	"openai-codex/gpt-5.4": 2,
+export const OFFICIAL_FAST_MULTIPLIER: Readonly<Record<string, Readonly<Partial<Record<BillingBasis, number>>>>> = {
+	"openai-codex/gpt-6-astra": { "included-quota": 2.5, credits: 2 },
+	"openai-codex/gpt-6.1-sol": { "included-quota": 2.5, credits: 2 },
+	"openai-codex/gpt-6-sol": { "included-quota": 2.5, credits: 2 },
+	"openai-codex/gpt-6-luna": { "included-quota": 2.5, credits: 2 },
+	"openai-codex/gpt-5.6-sol": { "included-quota": 2.5, credits: 2 },
+	"openai-codex/gpt-5.6-terra": { "included-quota": 2.5, credits: 2 },
+	"openai-codex/gpt-5.6-luna": { "included-quota": 2.5, credits: 2 },
+	"openai-codex/gpt-5.5": { "included-quota": 2.5, credits: 2 },
+	"openai-codex/gpt-5.4": { "included-quota": 2 },
 };
 
 /** Built-in supported models for the OpenAI Codex provider. */
 export const DEFAULT_FAST_MODE_MODELS = [
 	"openai-codex/gpt-6-astra",
 	"openai-codex/gpt-6.1-sol",
+	"openai-codex/gpt-6-sol",
+	"openai-codex/gpt-6-luna",
 	"openai-codex/gpt-5.6-sol",
 	"openai-codex/gpt-5.6-terra",
 	"openai-codex/gpt-5.6-luna",
-	"openai-codex/gpt-5.5",
 ] as const;
 
 /** Request-tier and rate-card policy for one API. */
@@ -139,9 +145,11 @@ export interface ConfigFile {
 	/** Default fast-mode state for new sessions. */
 	active?: boolean;
 	serviceTier?: ServiceTier;
+	/** Estimate included subscription usage (default) or credits/Enterprise PAYG. */
+	billingBasis?: BillingBasis;
 	allowlist?: string[];
 	blocklist?: string[];
-	/** Explicit fast-mode rates for models the built-in rate card does not cover. */
+	/** Absolute Fast multipliers; override either basis, without enabling a model. */
 	multipliers?: Multipliers;
 }
 
@@ -150,6 +158,7 @@ export interface ResolvedConfig {
 	persistState: boolean;
 	active: boolean;
 	serviceTier: ServiceTier;
+	billingBasis: BillingBasis;
 	allowlist: SupportedModel[];
 	blocklist: SupportedModel[];
 	multipliers: Multipliers;
@@ -162,6 +171,7 @@ export interface RuntimeState {
 
 /** Per-request model membership and fast-mode rate policy. */
 export interface FastModePolicy {
+	billingBasis: BillingBasis;
 	defaults: readonly SupportedModel[];
 	allowlist: readonly SupportedModel[];
 	blocklist: readonly SupportedModel[];
@@ -170,10 +180,11 @@ export interface FastModePolicy {
 
 type OpenAIServiceTierOptions = CodexStreamOptions;
 
-const DEFAULT_CONFIG: Required<Pick<ConfigFile, "persistState" | "active" | "serviceTier" | "allowlist" | "blocklist" | "multipliers">> = {
+const DEFAULT_CONFIG: Required<ConfigFile> = {
 	persistState: true,
 	active: false,
 	serviceTier: "priority",
+	billingBasis: "included-quota",
 	allowlist: [],
 	blocklist: [],
 	multipliers: {},
@@ -265,6 +276,9 @@ export function readConfig(path: string): ConfigFile | undefined {
 		if (typeof parsed.persistState === "boolean") config.persistState = parsed.persistState;
 		if (typeof parsed.active === "boolean") config.active = parsed.active;
 		if (isServiceTier(parsed.serviceTier)) config.serviceTier = parsed.serviceTier;
+		if (typeof parsed.billingBasis === "string" && (BILLING_BASES as readonly string[]).includes(parsed.billingBasis)) {
+			config.billingBasis = parsed.billingBasis as BillingBasis;
+		}
 		const allowlist = normalizeModelKeys(parsed.allowlist);
 		if (allowlist !== undefined) config.allowlist = allowlist;
 		const blocklist = normalizeModelKeys(parsed.blocklist);
@@ -319,6 +333,7 @@ export function resolveConfig(cwd: string, agentDir = getAgentDir(), trusted = t
 		persistState: merged.persistState ?? DEFAULT_CONFIG.persistState,
 		active: merged.active ?? DEFAULT_CONFIG.active,
 		serviceTier: merged.serviceTier ?? DEFAULT_CONFIG.serviceTier,
+		billingBasis: merged.billingBasis ?? DEFAULT_CONFIG.billingBasis,
 		allowlist: parseModels(merged.allowlist) ?? [],
 		blocklist: parseModels(merged.blocklist) ?? [],
 		multipliers: parseMultipliers(merged.multipliers) ?? {},
@@ -336,6 +351,7 @@ function contains(list: readonly SupportedModel[], model: Pick<Model<Api>, "prov
 
 /** Merge every spec's built-in defaults and the configured rates into one policy. */
 export function buildFastModePolicy(specs: readonly ApiTierSpec[], config: {
+	billingBasis?: BillingBasis;
 	allowlist?: readonly SupportedModel[];
 	blocklist?: readonly SupportedModel[];
 	multipliers?: Multipliers;
@@ -345,6 +361,7 @@ export function buildFastModePolicy(specs: readonly ApiTierSpec[], config: {
 		.map((key) => parseModelKey(key))
 		.filter((entry): entry is SupportedModel => entry !== undefined);
 	return {
+		billingBasis: config.billingBasis ?? DEFAULT_CONFIG.billingBasis,
 		defaults,
 		allowlist: config.allowlist ?? [],
 		blocklist: config.blocklist ?? [],
@@ -368,8 +385,8 @@ export function isModelAllowed(
 /**
  * Established fast-mode rate for a model: an explicit `multipliers` config
  * entry (which may override the built-in card) or a verified built-in
- * rate-card entry. Undefined when no rate is established — callers must fail
- * closed rather than guess a multiplier.
+ * rate-card entry for the configured basis. Undefined when no rate is
+ * established — callers must fail closed rather than guess a multiplier.
  */
 export function fastMultiplierFor(
 	model: Pick<Model<Api>, "provider" | "id"> | undefined,
@@ -377,12 +394,14 @@ export function fastMultiplierFor(
 ): number | undefined {
 	if (!model) return undefined;
 	const key = `${model.provider}/${model.id}`;
-	return policy.multipliers[key] ?? OFFICIAL_FAST_MULTIPLIER[key];
+	return policy.multipliers[key] ?? OFFICIAL_FAST_MULTIPLIER[key]?.[policy.billingBasis];
 }
 
-/** Fast mode for one model: the tier to request and the rate to charge it at. */
+/** Fast mode for one model: request tier and explicit estimate basis/source. */
 export interface FastModeResolution {
 	tier: ServiceTier;
+	billingBasis: BillingBasis;
+	multiplierSource: "configured" | "official";
 	/** Established fast-mode rate (built-in rate card or configured), never a guess. */
 	multiplier: number;
 }
@@ -404,7 +423,13 @@ export function resolveFastMode(
 	const multiplier = fastMultiplierFor(model, policy);
 	if (multiplier === undefined) return undefined;
 	const tiers = getModelsForApi(specs, model.api);
-	return tiers.includes(state.serviceTier) ? { tier: state.serviceTier, multiplier } : undefined;
+	if (!tiers.includes(state.serviceTier)) return undefined;
+	return {
+		tier: state.serviceTier,
+		multiplier,
+		billingBasis: policy.billingBasis,
+		multiplierSource: policy.multipliers[`${model.provider}/${model.id}`] === undefined ? "official" : "configured",
+	};
 }
 
 interface CostableUsage {
@@ -422,6 +447,8 @@ interface CostableUsage {
  * cost — so re-running it cleanly replaces any prior (multiplied) pricing, then
  * the established multiplier is applied. This depends on `model.cost`
  * and pi-ai's tier logic, not on pi-ai's internal multiplier table.
+ * Own only the stock stream's terminal pricing, before downstream usage
+ * adjustments (e.g. message_end). Never reprice finalized session messages.
  */
 export function applyFastModePricing(model: Model<Api>, usage: CostableUsage, multiplier: number): void {
 	calculateCost(model as never, usage as never);
@@ -560,7 +587,8 @@ export function statusText(
 		// still explain why fast mode did not apply when explicitly requested.
 		return "";
 	}
-	return `⚡ FAST · $ ${resolution.multiplier}×`;
+	const label = resolution.multiplierSource === "configured" ? "override" : resolution.billingBasis === "credits" ? "credits" : "quota";
+	return `⚡ FAST · ${label} ${resolution.multiplier}×`;
 }
 
 /** Plain request policy only: registered streams never retain extension contexts. */
@@ -748,7 +776,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		}
 		if (resolution) {
 			ctx.ui.notify(
-				`Fast mode: ${resolution.tier} service tier for ${modelKey}. Cost accounting applies the ${resolution.multiplier}× fast-mode multiplier.`,
+				`Fast mode: ${resolution.tier} service tier for ${modelKey}. Estimate basis: ${resolution.billingBasis === "credits" ? "credits/Enterprise PAYG" : "included quota"}; ${resolution.multiplier}× Fast multiplier (${resolution.multiplierSource === "configured" ? "configured override" : "rate card"}).`,
 				"info",
 			);
 			return;
@@ -764,7 +792,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 			}
 			if (ctx.model && isModelAllowed(ctx.model, SPECS, policy) && fastMultiplierFor(ctx.model, policy) === undefined) {
 				ctx.ui.notify(
-					`Fast mode is on, but ${modelKey} has no established fast-mode rate, so priority was not requested and cost would be guesswork. Verify the model's fast-mode multiplier on the OpenAI Codex rate card, then set "multipliers": { "${modelKey}": <multiplier> } in ${config.configPath}.`,
+					`Fast mode is on, but ${modelKey} has no established fast-mode rate for ${policy.billingBasis}, so priority was not requested and cost would be guesswork. Verify the model's fast-mode multiplier on the OpenAI Codex rate card, then set "multipliers": { "${modelKey}": <multiplier> } in ${config.configPath}.`,
 					"warning",
 				);
 				return;
