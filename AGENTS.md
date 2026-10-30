@@ -1,12 +1,10 @@
 # pi-fast-mode
 
-Toggle OpenAI Codex fast mode (`service_tier: "priority"`) in pi with correct footer cost accounting.
-
-The extension requests `service_tier: "priority"` only for supported Codex models with an established rate. Its local cost estimate uses the configured billing basis and verified rate card or explicit per-model multiplier; it does not infer the account plan.
+Toggle ChatGPT subscription fast mode (`service_tier: "priority"`) in Pi through `openai` and legacy `openai-codex` logins. Displayed costs estimate subscription usage, not API charges or remaining quota.
 
 ## Stack
 
-TypeScript, Bun. The minimum pi-ai runtime is 0.84.2. Pi extension API (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`).
+TypeScript, Bun. Pi extension API (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`). `README.md` owns route-specific runtime requirements; pinned development dependencies are the check target.
 
 ## Testing
 
@@ -18,6 +16,7 @@ No build step — pi loads the extension directly.
 
 ## Invariants
 
+- API-key requests must retain stock handling, without subscription tiers or usage multipliers. On `openai`, proxy endpoints and conflicting authorization headers are also excluded.
 - Pi's legacy provider composer routes both `stream()` and `streamSimple()` through the registered `streamSimple` overlay. Never overwrite an API-specific `reasoningEffort` when only the provider-neutral `reasoning` option is absent.
 - Project configuration and the `/fast` write destination are gated on `ctx.isProjectTrusted()`; an untrusted project must not steer tier eligibility.
 - Pricing is fail-closed: request the priority tier and apply a multiplier only when the model has an established rate — a verified `OFFICIAL_FAST_MULTIPLIER` entry or an explicit configured `multipliers` entry. Never guess a rate for an unknown model.
