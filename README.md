@@ -79,7 +79,7 @@ OpenAI renamed priority processing to Fast mode on July 30, 2026 and also accept
 
 Fast mode uses Pi's stock Responses or Codex transport. Static model, authentication, endpoint, and header configuration is preserved. The new `openai` login stays on the public Responses API; it is never redirected to the legacy Codex backend. Native provider replacements, custom stream handlers, and dynamically refreshed legacy catalogs are left untouched, even when fast mode is enabled.
 
-Pi sends both full and simple calls through the overlay's single handler. OpenAI requests use Pi's simple-call output budget and context clamp on both paths; an explicit full-call reasoning effort is preserved. ChatGPT subscription requests omit the output-limit field, as required by that endpoint.
+Pi sends both full and simple calls through the overlay's single handler. Ordinary API-key calls use Pi's stock simple-call defaults and context clamp; calls with explicit API-specific options use the stock full transport. An explicit reasoning effort is preserved. ChatGPT subscription requests omit the output-limit field, as required by that endpoint.
 
 Pi 1.2 provider registration replaces stream owners rather than composing middleware. Fast mode cooperates with a `pi-provider-compaction` 0.0.6+ observer that explicitly marks transparent delegation to fast mode's own stock overlay. Other stream wrappers and provider replacements remain unsupported: fast mode adds no priority tier or fast-mode pricing, hides the footer indicator, and explains the conflict in `/fast status`. Disable the competing provider extension and reload to use `/fast`.
 

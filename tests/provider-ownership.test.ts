@@ -262,7 +262,7 @@ describe("ModelRuntime provider ownership", () => {
 		expect(f.errors).toEqual([]);
 	});
 
-	test("OpenAI API-key simple calls retain the stock output budget and context clamp", async () => {
+	test("OpenAI API-key calls retain stock option shaping and context limits", async () => {
 		const openai: Model<"openai-responses"> = {
 			...model, provider: "openai", api: "openai-responses", id: "gpt-6.1-sol",
 			baseUrl: "https://api.openai.com/v1", contextWindow: 8192,
@@ -272,12 +272,16 @@ describe("ModelRuntime provider ownership", () => {
 		for (const f of [stock, overlaid]) {
 			await f.credentials.modify("openai", async () => ({ type: "api_key", key: "sk-test" }));
 		}
-		for (const overrides of [{}, { maxTokens: 32_000 }]) {
-			const baseline = await stockRequest(stock.runtime, false, openai, overrides);
-			const actual = await stockRequest(overlaid.runtime, false, openai, overrides);
-			expect(baseline.body?.max_output_tokens).toBeGreaterThan(0);
-			expect(baseline.body?.max_output_tokens).toBeLessThan(8192);
-			expect(actual.body).toEqual(baseline.body);
+		for (const full of [false, true]) {
+			for (const overrides of [{}, { maxTokens: 32_000 }]) {
+				const baseline = await stockRequest(stock.runtime, full, openai, overrides);
+				const actual = await stockRequest(overlaid.runtime, full, openai, overrides);
+				if (!full) {
+					expect(baseline.body?.max_output_tokens).toBeGreaterThan(0);
+					expect(baseline.body?.max_output_tokens).toBeLessThan(8192);
+				}
+				expect(actual.body).toEqual(baseline.body);
+			}
 		}
 	});
 

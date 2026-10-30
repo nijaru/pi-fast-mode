@@ -33,7 +33,6 @@
 import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { calculateCost, clampThinkingLevel, createAssistantMessageEventStream, registerSessionResourceCleanup } from "@earendil-works/pi-ai";
 import { openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
-import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
 import type {
 	Api,
 	AssistantMessage,
@@ -140,12 +139,7 @@ export const OPENAI_RESPONSES_SPEC: ApiTierSpec = {
 	supportedTiers: ["priority"],
 	defaultModels: DEFAULT_FAST_MODE_MODELS.map(key => key.replace("openai-codex/", "openai/")),
 	streamRaw: (model, context, options) =>
-		openAIResponsesApi().stream(model as Model<"openai-responses">, context, {
-			...options,
-			// The legacy overlay unifies full/simple calls. Keep Pi's simple-path
-			// output budget on both, without losing a full caller's reasoningEffort.
-			maxTokens: clampMaxTokensToContext(model, context, options.maxTokens ?? model.maxTokens),
-		}),
+		openAIResponsesApi().stream(model as Model<"openai-responses">, context, options),
 };
 
 export const SPECS: readonly ApiTierSpec[] = [CODEX_RESPONSES_SPEC, OPENAI_RESPONSES_SPEC];
@@ -658,7 +652,17 @@ function installFastModeOverlay(
 	};
 	const streamSimple = (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) => {
 		const eligible = spec.provider !== "openai" || isOpenAISubscriptionRequest(model, options);
-		const resolution = eligible && inDispatchPath() ? resolveFastMode(model, session.state, SPECS, session.policy) : undefined;
+		if (!eligible) {
+			// Pi's legacy overlay merges full/simple calls. Keep ordinary API-key
+			// calls on stock simple normalization; explicit API-specific options
+			// still need the full stream so reasoning effort and tiers survive.
+			const full = options as CodexStreamOptions | undefined;
+			const apiOptions = full?.reasoningEffort !== undefined || full?.reasoningSummary !== undefined || full?.serviceTier !== undefined;
+			return apiOptions
+				? spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, undefined))
+				: openAIResponsesApi().streamSimple(model as Model<"openai-responses">, context, options);
+		}
+		const resolution = inDispatchPath() ? resolveFastMode(model, session.state, SPECS, session.policy) : undefined;
 		const fullOptions = buildFullOpenAIOptions(model, options, resolution?.tier);
 		let reportedTier: string | undefined;
 		// Public Responses reports the processing tier. Legacy Codex can report
