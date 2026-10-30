@@ -608,7 +608,7 @@ export function statusText(
 		// still explain why fast mode did not apply when explicitly requested.
 		return "";
 	}
-	return `⚡ FAST requested · ${resolution.multiplier}× est.`;
+	return "⚡ FAST";
 }
 
 /** Plain request policy only: registered streams never retain extension contexts. */
@@ -812,11 +812,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		const policy = buildFastModePolicy(SPECS, config);
 		const resolution = subscription ? resolveFastMode(model, state, SPECS, policy) : undefined;
 		const modelKey = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
-		const multiplier = subscription && ctx.model && isModelAllowed(ctx.model, SPECS, policy) ? fastMultiplierFor(ctx.model, policy) : undefined;
-		const basis = policy.billingBasis === "credits" ? "credits/Enterprise PAYG" : "included quota";
-		const source = policy.multipliers[modelKey] === undefined ? "rate card" : "configured override";
-		const detail = reason === "status" && subscription ? ` Estimate basis: ${basis}${multiplier === undefined ? "" : `; ${multiplier}× Fast multiplier (${source})`}.` : "";
-		const notify = (message: string, level: "info" | "warning" = "info") => ctx.ui.notify(message + detail, level);
+		const notify = (message: string, level: "info" | "warning" = "info") => ctx.ui.notify(message, level);
 		if (resolution && !selectedOverlayInstalled(ctx)) {
 			notify(
 				`Fast mode is on, but inactive: another provider or stream owns ${ctx.model?.provider}. This extension is not applying a priority tier or fast-mode pricing. Disable the competing provider extension and reload to use /fast.`,
@@ -825,7 +821,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 			return;
 		}
 		if (resolution) {
-			if (reason !== "startup") notify(reason === "status" ? `Priority requested for ${modelKey}. OpenAI may use standard processing.` : "Fast mode on.");
+			if (reason !== "startup") notify("Fast mode on.");
 			return;
 		}
 		if (state.active) {
@@ -849,7 +845,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 				: "Fast mode is unavailable for this connection. Use OpenAI’s ChatGPT subscription login; API keys receive no Fast tier or usage multiplier.");
 			return;
 		}
-		if (reason !== "startup") notify(reason === "status" ? `Fast mode is off. Current model: ${modelKey}.` : "Fast mode off.");
+		if (reason !== "startup") notify("Fast mode off.");
 	}
 
 	async function setActive(ctx: ExtensionContext, active: boolean): Promise<void> {

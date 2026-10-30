@@ -666,15 +666,15 @@ describe("extension registration", () => {
 			expect(notices.at(-1)?.message).toBe("Fast mode on.");
 			await commands.fast?.handler("status", ctx);
 
-			expect(statuses).toEqual([undefined, "· ⚡ FAST requested · 2.5× est.", "· ⚡ FAST requested · 2.5× est."]);
-			expect(notices.at(-1)?.message).toContain("Priority requested");
+			expect(statuses).toEqual([undefined, "· ⚡ FAST", "· ⚡ FAST"]);
+			expect(notices.at(-1)?.message).toBe("Fast mode on.");
 			expect(readConfig(configPath)?.active).toBe(true);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
-	test.each([codexModel("gpt-6-luna"), { ...codexModel("reasoner"), provider: "deepseek" }])("normal active startup stays quiet; explicit status explains the billing basis (%j)", async (model) => {
+	test.each([codexModel("gpt-6-luna"), { ...codexModel("reasoner"), provider: "deepseek" }])("normal active startup stays quiet; status reports state or unavailability (%j)", async (model) => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-quiet-"));
 		try {
 			const path = join(dir, ".pi", "extensions", CONFIG_BASENAME);
@@ -684,19 +684,17 @@ describe("extension registration", () => {
 			expect(f.notices).toEqual([]);
 			await f.commands.fast!.handler("status", f.ctx);
 			expect(f.notices.at(-1)?.level).toBe("info");
-			expect(f.notices.at(-1)?.message).toContain("credits/Enterprise PAYG");
+			expect(f.notices.at(-1)?.message).toBe(model.provider === "openai-codex" ? "Fast mode on." : `Fast mode is on, but unavailable for ${model.provider}/${model.id}.`);
 		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
-	test("status reports configured billing and rate overrides even while off", async () => {
+	test("status stays concise while off, regardless of billing configuration", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-fast-mode-off-"));
 		try {
 			writeConfig(join(dir, ".pi", "extensions", CONFIG_BASENAME), { active: false, billingBasis: "credits", multipliers: { "openai-codex/gpt-6-luna": 3 } });
 			const f = await extensionHarness({ cwd: dir, model: codexModel("gpt-6-luna") });
 			await f.events.session_start!({}, f.ctx);
 			await f.commands.fast!.handler("status", f.ctx);
-			expect(f.notices.at(-1)?.message).toContain("off");
-			expect(f.notices.at(-1)?.message).toContain("credits/Enterprise PAYG");
-			expect(f.notices.at(-1)?.message).toContain("3× Fast multiplier (configured override)");
+			expect(f.notices.at(-1)?.message).toBe("Fast mode off.");
 		} finally { rmSync(dir, { recursive: true, force: true }); }
 	});
 	test("status distinguishes an unsupported configured tier from an unlisted model", async () => {
@@ -795,7 +793,7 @@ describe("extension registration", () => {
 			});
 			await events.session_start?.({ reason: "startup" }, ctx);
 
-			expect(statuses).toEqual(["· ⚡ FAST requested · 2.5× est."]);
+			expect(statuses).toEqual(["· ⚡ FAST"]);
 			expect(entries).toEqual([
 				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
@@ -822,7 +820,7 @@ describe("extension registration", () => {
 			});
 			await events.session_start?.({ reason: "resume" }, ctx);
 
-			expect(statuses).toEqual(["· ⚡ FAST requested · 2.5× est."]);
+			expect(statuses).toEqual(["· ⚡ FAST"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -862,17 +860,17 @@ describe("extension registration", () => {
 describe("statusText", () => {
 	const policy = buildFastModePolicy(SPECS, {});
 	test("shows a compact fast indicator when applied", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toBe("⚡ FAST requested · 2.5× est.");
+		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toBe("⚡ FAST");
 		expect(statusText(codexModel("gpt-6-luna"), stateOn, SPECS, buildFastModePolicy(SPECS, {
 			billingBasis: "credits",
-		}))).toBe("⚡ FAST requested · 2× est.");
+		}))).toBe("⚡ FAST");
 	});
-	test("shows the established configured multiplier", () => {
+	test("does not show configured rates in the indicator", () => {
 		const f = buildFastModePolicy(SPECS, {
 			allowlist: [parseModelKey("openai-codex/custom-model")!],
 			multipliers: { "openai-codex/custom-model": 3 },
 		});
-		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("⚡ FAST requested · 3× est.");
+		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("⚡ FAST");
 	});
 	test("stays empty whenever no fast mode resolves", () => {
 		expect(statusText(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBe("");
@@ -897,7 +895,7 @@ describe("session_tree", () => {
 			});
 			await events.session_tree?.({}, ctx);
 
-			expect(statuses).toEqual(["· ⚡ FAST requested · 2.5× est."]);
+			expect(statuses).toEqual(["· ⚡ FAST"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

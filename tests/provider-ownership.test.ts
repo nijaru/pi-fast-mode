@@ -207,7 +207,7 @@ describe("ModelRuntime provider ownership", () => {
 			expect(result.usage.cost.total).toBeCloseTo(2);
 			expect(result.usage.input).toBe(1_000_000);
 		}
-		expect(f.statuses.get(STATUS_KEY)).toContain("2.5×");
+		expect(f.statuses.get(STATUS_KEY)).toBe("· ⚡ FAST");
 		await f.session.prompt("/fast off");
 		const inactive = await stockRequest(f.runtime, true);
 		expect(inactive.body?.service_tier).toBeUndefined();
@@ -234,7 +234,7 @@ describe("ModelRuntime provider ownership", () => {
 			expect(headers.get("authorization")).toStartWith("Bearer e30.");
 			expect(result.usage.cost.total).toBeCloseTo(2);
 		}
-		expect(f.statuses.get(STATUS_KEY)).toContain("2.5×");
+		expect(f.statuses.get(STATUS_KEY)).toBe("· ⚡ FAST");
 		let observedTier: string | undefined;
 		const downgraded = await stockRequest(f.runtime, true, openai, {
 			onProviderStreamEvent(event) {
@@ -338,8 +338,8 @@ describe("ModelRuntime provider ownership", () => {
 		expect(message.usage.input).toBe(1_000_000);
 		await f.session.prompt("/fast status");
 		expect(f.session.getSessionStats().cost).toBeCloseTo(0.8 * multiplier * 1.3);
-		expect(f.statuses.get(STATUS_KEY)).toBe(`· ⚡ FAST requested · ${multiplier}× est.`);
-		expect(f.notices.at(-1)).toContain(billingBasis === "credits" ? "credits/Enterprise PAYG" : "included quota");
+		expect(f.statuses.get(STATUS_KEY)).toBe("· ⚡ FAST");
+		expect(f.notices.at(-1)).toBe("Fast mode on.");
 		expect(f.errors).toEqual([]);
 	});
 
@@ -450,8 +450,8 @@ describe("ModelRuntime provider ownership", () => {
 		expect((await stockRequest(f.runtime)).body?.service_tier).toBeUndefined();
 		f.runtime.registerProvider(model.provider, { api: model.api, streamSimple: original.streamSimple });
 		await f.session.prompt("/fast status");
-		expect(f.statuses.get(STATUS_KEY)).toContain("2.5×");
-		expect(f.notices.at(-1)).toContain("Priority requested");
+		expect(f.statuses.get(STATUS_KEY)).toBe("· ⚡ FAST");
+		expect(f.notices.at(-1)).toBe("Fast mode on.");
 		const recovered = await stockRequest(f.runtime);
 		expect(recovered.body?.service_tier).toBe("priority");
 		expect(recovered.result.usage.cost.total).toBeCloseTo(2);
@@ -499,8 +499,8 @@ describe("ModelRuntime provider ownership", () => {
 			expect(result.usage.input).toBe(1_000_000);
 		}
 		await f.session.prompt("/fast status");
-		expect(f.statuses.get(STATUS_KEY)).toContain("2.5×");
-		expect(f.notices.at(-1)).toContain("Priority requested");
+		expect(f.statuses.get(STATUS_KEY)).toBe("· ⚡ FAST");
+		expect(f.notices.at(-1)).toBe("Fast mode on.");
 		await f.session.prompt("/fast off");
 		const inactive = await stockRequest(f.runtime);
 		expect(inactive.body?.service_tier).toBeUndefined();
@@ -510,7 +510,7 @@ describe("ModelRuntime provider ownership", () => {
 		const activeAgain = await stockRequest(f.runtime);
 		expect(activeAgain.body?.service_tier).toBe("priority");
 		expect(activeAgain.result.usage.cost.total).toBeCloseTo(2);
-		expect(f.statuses.get(STATUS_KEY)).toContain("2.5×");
+		expect(f.statuses.get(STATUS_KEY)).toBe("· ⚡ FAST");
 		expect(observed).toBe(5);
 		expect(released).toBe(0);
 		expect(f.registry.getRegisteredProviderConfig(model.provider)?.streamSimple).toBe(observer);

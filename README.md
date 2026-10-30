@@ -20,10 +20,12 @@ Your pi catalog and account must expose the selected model; adding a model to th
 /fast                  toggle fast mode and remember it for new sessions
 /fast on               enable now and for new sessions
 /fast off              disable now and for new sessions
-/fast status           show current state and the active model
+/fast status           show whether fast mode is on or off
 ```
 
-Fast mode is off by default. Normal session startup is silent; toggles give a short confirmation, while `/fast status` gives billing details. Actionable configuration or provider conflicts still warn. When enabled, supported, and installed without a provider conflict, the footer shows `⚡ FAST requested · 2.5× est.` (or the applicable multiplier). This shows the requested mode and its usage estimate, not a guarantee of faster processing. The public Responses API can return a standard response; when it reports another tier, the extension keeps Pi's price for that tier instead of applying the Fast multiplier. `/fast status` explains the configured billing basis and any per-model override. Priority tiers and usage multipliers apply only to listed ChatGPT subscription models with an established Fast rate. Other providers are untouched.
+Fast mode is off by default. The footer shows `⚡ FAST` when enabled and available for the selected model; otherwise, the indicator is hidden. Toggles and `/fast status` show “Fast mode on.” or “Fast mode off.” Normal session startup is silent. Configuration errors and provider conflicts still explain what prevents fast mode from working.
+
+Priority tiers and usage multipliers apply only to listed ChatGPT subscription models with an established Fast rate. Other providers are untouched.
 
 ## Supported models
 
