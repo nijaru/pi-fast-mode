@@ -23,7 +23,7 @@ Your pi catalog and account must expose the selected model; adding a model to th
 /fast status           show whether fast mode is on or off
 ```
 
-Fast mode is off by default. The footer shows `⚡ FAST` when enabled and available for the selected model; otherwise, the indicator is hidden. Toggles and `/fast status` show “Fast mode on.” or “Fast mode off.” Normal session startup is silent. Configuration errors and provider conflicts still explain what prevents fast mode from working.
+Fast mode is off by default. The footer shows `⚡FAST` when enabled and available for the selected model; otherwise, the indicator is hidden. Toggles and `/fast status` show “Fast mode on.” or “Fast mode off.” Normal session startup is silent. Configuration errors and provider conflicts still explain what prevents fast mode from working.
 
 Priority tiers and usage multipliers apply only to listed ChatGPT subscription models with an established Fast rate. Other providers are untouched.
 

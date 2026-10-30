@@ -608,7 +608,7 @@ export function statusText(
 		// still explain why fast mode did not apply when explicitly requested.
 		return "";
 	}
-	return "⚡ FAST";
+	return "⚡FAST";
 }
 
 /** Plain request policy only: registered streams never retain extension contexts. */
