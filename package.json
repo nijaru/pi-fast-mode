@@ -2,7 +2,7 @@
   "name": "@nijaru/pi-fast-mode",
   "version": "0.0.7",
   "type": "module",
-  "description": "Toggle OpenAI Codex fast mode (priority service tier) in pi, with correct footer cost accounting.",
+  "description": "Toggle ChatGPT subscription fast mode in pi, with subscription usage estimates.",
   "keywords": [
     "pi-package",
     "pi",

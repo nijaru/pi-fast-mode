@@ -1,12 +1,9 @@
 /**
- * pi-fast-mode — OpenAI Codex fast mode for pi.
+ * pi-fast-mode — ChatGPT subscription fast mode for Pi.
  *
- * Registers an API-layer stream override for `openai-codex-responses` that
- * injects `service_tier: "priority"` into requests when fast mode is enabled
- * and the dispatched model is on the supported set. pi-ai's built-in
- * `openai-codex-responses` implementation turns `options.serviceTier` into the
- * `service_tier` request body field. Its internal priority pricing is replaced
- * with the explicit estimate policy below.
+ * Uses Pi's stock Responses and Codex transports to request priority processing
+ * for supported subscription models. API keys on `openai` are excluded. On
+ * public Responses, the reported tier takes precedence for pricing.
  *
  * Model selection is a three-part override, evaluated per request:
  *   supported = (built-in defaults ∪ allowlist) − blocklist
@@ -35,7 +32,8 @@
 
 import { CONFIG_DIR_NAME, getAgentDir, type ExtensionAPI, type ExtensionContext, type ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { calculateCost, clampThinkingLevel, createAssistantMessageEventStream, registerSessionResourceCleanup } from "@earendil-works/pi-ai";
-import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
+import { openAICodexResponsesApi, openAIResponsesApi } from "@earendil-works/pi-ai/compat";
+import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
 import type {
 	Api,
 	AssistantMessage,
@@ -75,12 +73,12 @@ export type BillingBasis = (typeof BILLING_BASES)[number];
 
 /**
  * Verified Fast rates by billing basis, keyed `provider/model`.
- * https://learn.chatgpt.com/docs/agent-configuration/speed (2026-10-23).
+ * https://learn.chatgpt.com/docs/agent-configuration/speed (2026-10-30).
  * Credits includes purchased credits and Enterprise PAYG, not API-key billing.
  * Retired 5.5/5.4 retain established historical rates for explicit allowlisting
  * only. No credits-basis rate is established here for 5.4.
  */
-export const OFFICIAL_FAST_MULTIPLIER: Readonly<Record<string, Readonly<Partial<Record<BillingBasis, number>>>>> = {
+const CODEX_FAST_MULTIPLIER: Readonly<Record<string, Readonly<Partial<Record<BillingBasis, number>>>>> = {
 	"openai-codex/gpt-6-astra": { "included-quota": 2.5, credits: 2 },
 	"openai-codex/gpt-6.1-sol": { "included-quota": 2.5, credits: 2 },
 	"openai-codex/gpt-6-sol": { "included-quota": 2.5, credits: 2 },
@@ -90,6 +88,13 @@ export const OFFICIAL_FAST_MULTIPLIER: Readonly<Record<string, Readonly<Partial<
 	"openai-codex/gpt-5.6-luna": { "included-quota": 2.5, credits: 2 },
 	"openai-codex/gpt-5.5": { "included-quota": 2.5, credits: 2 },
 	"openai-codex/gpt-5.4": { "included-quota": 2 },
+};
+
+// ChatGPT subscription sharing draws on the same included usage/credits as Codex.
+// API-key requests are excluded at dispatch; these are not API billing rates.
+export const OFFICIAL_FAST_MULTIPLIER = {
+	...CODEX_FAST_MULTIPLIER,
+	...Object.fromEntries(Object.entries(CODEX_FAST_MULTIPLIER).map(([key, rate]) => [key.replace("openai-codex/", "openai/"), rate])),
 };
 
 /** Built-in supported models for the OpenAI Codex provider. */
@@ -129,7 +134,31 @@ export const CODEX_RESPONSES_SPEC: ApiTierSpec = {
 		openAICodexResponsesApi().stream(model as Model<"openai-codex-responses">, context, options),
 };
 
-export const SPECS: readonly ApiTierSpec[] = [CODEX_RESPONSES_SPEC];
+export const OPENAI_RESPONSES_SPEC: ApiTierSpec = {
+	provider: "openai",
+	api: "openai-responses",
+	supportedTiers: ["priority"],
+	defaultModels: DEFAULT_FAST_MODE_MODELS.map(key => key.replace("openai-codex/", "openai/")),
+	streamRaw: (model, context, options) =>
+		openAIResponsesApi().stream(model as Model<"openai-responses">, context, {
+			...options,
+			// The legacy overlay unifies full/simple calls. Keep Pi's simple-path
+			// output budget on both, without losing a full caller's reasoningEffort.
+			maxTokens: clampMaxTokensToContext(model, context, options.maxTokens ?? model.maxTokens),
+		}),
+};
+
+export const SPECS: readonly ApiTierSpec[] = [CODEX_RESPONSES_SPEC, OPENAI_RESPONSES_SPEC];
+
+/** Mirror Pi's direct ChatGPT token route, never apply subscription rates to API keys/proxies. */
+function isOpenAISubscriptionRequest(model: Model<Api>, options: SimpleStreamOptions | undefined): boolean {
+	if (model.baseUrl !== "https://api.openai.com/v1" || !options?.apiKey || options.apiKey.startsWith("sk-")) return false;
+	const headers = { ...model.headers, ...options.headers };
+	for (const [name, value] of Object.entries(headers)) {
+		if (name.toLowerCase() === "authorization" && value !== `Bearer ${options.apiKey}`) return false;
+	}
+	return true;
+}
 
 export interface SupportedModel {
 	provider: string;
@@ -501,15 +530,17 @@ function createStreamErrorMessage(model: Model<Api>, error: unknown): AssistantM
 export function withFastModePricing(
 	stream: AssistantMessageEventStream,
 	model: Model<Api>,
-	multiplier: number,
+	multiplier: number | (() => number | undefined),
 ): AssistantMessageEventStream {
+	// Undefined leaves the stock price intact when the server used another tier.
 	// Even 1× must replace the raw provider's own priority multiplier.
 	const out = createAssistantMessageEventStream();
 	void (async () => {
 		try {
 			let final: AssistantMessage | undefined;
 			for await (const event of stream) {
-				scaleEventUsage(event, model, multiplier);
+				const rate = typeof multiplier === "function" ? multiplier() : multiplier;
+				if (rate !== undefined) scaleEventUsage(event, model, rate);
 				out.push(event);
 				final = terminalMessage(event) ?? final;
 			}
@@ -577,7 +608,7 @@ export function statusText(
 		// still explain why fast mode did not apply when explicitly requested.
 		return "";
 	}
-	return `⚡ FAST · ${resolution.multiplier}×`;
+	return `⚡ FAST requested · ${resolution.multiplier}× est.`;
 }
 
 /** Plain request policy only: registered streams never retain extension contexts. */
@@ -626,9 +657,24 @@ function installFastModeOverlay(
 			(current.streamSimple === streamSimple || compactionObserver(current.streamSimple, streamSimple) !== undefined);
 	};
 	const streamSimple = (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) => {
-		const resolution = inDispatchPath() ? resolveFastMode(model, session.state, SPECS, session.policy) : undefined;
-		const stream = spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, resolution?.tier));
-		return resolution ? withFastModePricing(stream, model, resolution.multiplier) : stream;
+		const eligible = spec.provider !== "openai" || isOpenAISubscriptionRequest(model, options);
+		const resolution = eligible && inDispatchPath() ? resolveFastMode(model, session.state, SPECS, session.policy) : undefined;
+		const fullOptions = buildFullOpenAIOptions(model, options, resolution?.tier);
+		let reportedTier: string | undefined;
+		// Public Responses reports the processing tier. Legacy Codex can report
+		// "default" even for Fast requests; retain Pi's Codex interpretation there.
+		if (resolution && spec.provider === "openai") {
+			fullOptions.onProviderStreamEvent = async (event, requestModel) => {
+				if (isRecord(event) && isRecord(event.response) && typeof event.response.service_tier === "string") {
+					reportedTier = event.response.service_tier;
+				}
+				await options?.onProviderStreamEvent?.(event, requestModel);
+			};
+		}
+		const stream = spec.streamRaw(model, context, fullOptions);
+		return resolution ? withFastModePricing(stream, model, () =>
+			reportedTier === undefined || reportedTier === "priority" || reportedTier === "fast" ? resolution.multiplier : undefined,
+		) : stream;
 	};
 	registry.registerProvider(spec.provider, { api: spec.api, streamSimple });
 	return {
@@ -654,15 +700,15 @@ export default function piFastMode(pi: ExtensionAPI): void {
 	let config: ResolvedConfig = resolveConfig(process.cwd(), getAgentDir(), false);
 	let state: RuntimeState = { active: config.active, serviceTier: config.serviceTier };
 	let session: FastModeSession | undefined;
-	let overlay: FastModeOverlay | undefined;
+	const overlays = new Map<string, FastModeOverlay>();
 	let registry: ModelRegistry | undefined;
 	let sessionId: string | undefined;
 	let unregisterCleanup: (() => void) | undefined;
 
 	function cleanup(): void {
 		if (session) session.state = { ...session.state, active: false };
-		overlay?.release();
-		overlay = undefined;
+		for (const overlay of overlays.values()) overlay.release();
+		overlays.clear();
 		session = undefined;
 		registry = undefined;
 		sessionId = undefined;
@@ -670,7 +716,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		unregisterCleanup = undefined;
 	}
 
-	function syncOverlay(ctx: ExtensionContext, policy: FastModePolicy): boolean {
+	function syncOverlays(ctx: ExtensionContext, policy: FastModePolicy): void {
 		const id = ctx.sessionManager.getSessionId();
 		if (registry !== ctx.modelRegistry || sessionId !== id) {
 			cleanup();
@@ -686,20 +732,17 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		Object.assign(session, { state, policy });
 		// Keep the stock overlay as a no-op while off so compaction can observe
 		// ordinary Codex requests without losing its delegate on /fast toggles.
-		if (overlay?.inDispatchPath()) return true;
-		// Keep the handle while displaced: a temporary wrapper may restore our
-		// exact stream, which must remain recoverable and releasable on disposal.
-		// All load-time registrations have flushed by session_start. Recheck at
-		// commands/turns too: another extension can replace the owner at any time.
-		const spec = CODEX_RESPONSES_SPEC;
-		const legacy = registry.getRegisteredProviderConfig(spec.provider);
-		if (registry.getRegisteredNativeProvider(spec.provider) || legacy?.streamSimple ||
-			legacy?.refreshModels || legacy?.oauth?.modifyModels ||
-			(legacy?.api !== undefined && legacy.api !== spec.api)) return false;
-		// Eligibility belongs to the dispatched model, not ctx.model: nested or
-		// routed Codex calls can differ from the model selected in the UI.
-		overlay = installFastModeOverlay(registry, session, spec);
-		return overlay.inDispatchPath();
+		for (const spec of SPECS) {
+			if (overlays.get(spec.provider)?.inDispatchPath()) continue;
+			// Keep displaced handles: a temporary wrapper may restore our exact
+			// stream, which must remain recoverable and releasable on disposal.
+			const legacy = registry.getRegisteredProviderConfig(spec.provider);
+			if (registry.getRegisteredNativeProvider(spec.provider) || legacy?.streamSimple ||
+				legacy?.refreshModels || legacy?.oauth?.modifyModels ||
+				(legacy?.api !== undefined && legacy.api !== spec.api)) continue;
+			// Eligibility follows each dispatched model, not the UI selection.
+			overlays.set(spec.provider, installFastModeOverlay(registry, session, spec));
+		}
 	}
 
 	function refreshConfig(ctx: ExtensionContext): ResolvedConfig {
@@ -739,23 +782,42 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		appendSessionState();
 	}
 
-	function updateStatus(ctx: ExtensionContext, synchronize = true): void {
+	async function subscriptionSelected(ctx: ExtensionContext): Promise<boolean> {
+		const model = ctx.model;
+		if (model?.provider !== "openai") return true;
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		return auth.ok && isOpenAISubscriptionRequest({ ...model, baseUrl: auth.baseUrl ?? model.baseUrl }, auth);
+	}
+
+	function selectedOverlayInstalled(ctx: ExtensionContext): boolean {
+		return !!ctx.model && overlays.get(ctx.model.provider)?.inDispatchPath() === true;
+	}
+
+	async function updateStatus(ctx: ExtensionContext): Promise<void> {
 		const policy = buildFastModePolicy(SPECS, config);
-		const installed = synchronize ? syncOverlay(ctx, policy) : overlay?.inDispatchPath();
-		const text = statusText(ctx.model, state, installed ? SPECS : [], policy);
+		syncOverlays(ctx, policy);
+		const model = ctx.model, owner = session;
+		const candidate = selectedOverlayInstalled(ctx) && resolveFastMode(model, state, SPECS, policy) !== undefined;
+		const subscription = candidate && await subscriptionSelected(ctx);
+		if (session !== owner || ctx.model !== model || registry !== ctx.modelRegistry) return;
+		const installed = selectedOverlayInstalled(ctx) && subscription;
+		const text = statusText(model, state, installed ? SPECS : [], policy);
 		ctx.ui.setStatus(STATUS_KEY, text ? `· ${text}` : undefined);
 	}
 
-	function notifyStatus(ctx: ExtensionContext, reason: "toggle" | "status" | "startup"): void {
+	async function notifyStatus(ctx: ExtensionContext, reason: "toggle" | "status" | "startup"): Promise<void> {
+		const model = ctx.model, owner = session;
+		const subscription = await subscriptionSelected(ctx);
+		if (session !== owner || ctx.model !== model || registry !== ctx.modelRegistry) return;
 		const policy = buildFastModePolicy(SPECS, config);
-		const resolution = resolveFastMode(ctx.model, state, SPECS, policy);
+		const resolution = subscription ? resolveFastMode(model, state, SPECS, policy) : undefined;
 		const modelKey = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "none";
-		const multiplier = ctx.model && isModelAllowed(ctx.model, SPECS, policy) ? fastMultiplierFor(ctx.model, policy) : undefined;
+		const multiplier = subscription && ctx.model && isModelAllowed(ctx.model, SPECS, policy) ? fastMultiplierFor(ctx.model, policy) : undefined;
 		const basis = policy.billingBasis === "credits" ? "credits/Enterprise PAYG" : "included quota";
 		const source = policy.multipliers[modelKey] === undefined ? "rate card" : "configured override";
-		const detail = reason === "status" ? ` Estimate basis: ${basis}${multiplier === undefined ? "" : `; ${multiplier}× Fast multiplier (${source})`}.` : "";
+		const detail = reason === "status" && subscription ? ` Estimate basis: ${basis}${multiplier === undefined ? "" : `; ${multiplier}× Fast multiplier (${source})`}.` : "";
 		const notify = (message: string, level: "info" | "warning" = "info") => ctx.ui.notify(message + detail, level);
-		if (resolution && !overlay?.inDispatchPath()) {
+		if (resolution && !selectedOverlayInstalled(ctx)) {
 			notify(
 				`Fast mode is on, but inactive: another provider or stream owns ${ctx.model?.provider}. This extension is not applying a priority tier or fast-mode pricing. Disable the competing provider extension and reload to use /fast.`,
 				"warning",
@@ -763,7 +825,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 			return;
 		}
 		if (resolution) {
-			if (reason !== "startup") notify(reason === "status" ? `Fast mode: ${resolution.tier} service tier for ${modelKey}.` : "Fast mode on.");
+			if (reason !== "startup") notify(reason === "status" ? `Priority requested for ${modelKey}. OpenAI may use standard processing.` : "Fast mode on.");
 			return;
 		}
 		if (state.active) {
@@ -782,13 +844,15 @@ export default function piFastMode(pi: ExtensionAPI): void {
 				);
 				return;
 			}
-			if (reason !== "startup") notify(`Fast mode is on, but unavailable for ${modelKey}.`);
+			if (reason !== "startup") notify(subscription
+				? `Fast mode is on, but unavailable for ${modelKey}.`
+				: "Fast mode is unavailable for this connection. Use OpenAI’s ChatGPT subscription login; API keys receive no Fast tier or usage multiplier.");
 			return;
 		}
 		if (reason !== "startup") notify(reason === "status" ? `Fast mode is off. Current model: ${modelKey}.` : "Fast mode off.");
 	}
 
-	function setActive(ctx: ExtensionContext, active: boolean): void {
+	async function setActive(ctx: ExtensionContext, active: boolean): Promise<void> {
 		const previousConfig = config;
 		refreshConfig(ctx);
 		try {
@@ -802,12 +866,12 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		state = { ...state, active };
 		appendSessionState();
 		refreshConfig(ctx);
-		updateStatus(ctx);
-		notifyStatus(ctx, "toggle");
+		await updateStatus(ctx);
+		await notifyStatus(ctx, "toggle");
 	}
 
 	pi.registerCommand(COMMAND_FAST, {
-		description: "Toggle OpenAI Codex fast mode; /fast [on|off|status]",
+		description: "Toggle ChatGPT fast mode; /fast [on|off|status]",
 		getArgumentCompletions: (prefix) => {
 			const values = ["on", "off", "status"];
 			const items = values.filter((value) => value.startsWith(prefix.trim().toLowerCase()));
@@ -820,7 +884,7 @@ export default function piFastMode(pi: ExtensionAPI): void {
 			if (arg === "off") return setActive(ctx, false);
 			if (arg === "status") {
 				refreshConfig(ctx);
-				updateStatus(ctx);
+				await updateStatus(ctx);
 				return notifyStatus(ctx, "status");
 			}
 			ctx.ui.notify("Usage: /fast [on|off|status]", "error");
@@ -830,8 +894,8 @@ export default function piFastMode(pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
 		refreshConfig(ctx);
 		restoreSessionState(ctx, event.reason);
-		updateStatus(ctx);
-		if (state.active) notifyStatus(ctx, "startup");
+		await updateStatus(ctx);
+		if (state.active) await notifyStatus(ctx, "startup");
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
@@ -842,21 +906,21 @@ export default function piFastMode(pi: ExtensionAPI): void {
 		} else if (config.persistState) {
 			state = { active: false, serviceTier: config.serviceTier };
 		}
-		updateStatus(ctx);
+		await updateStatus(ctx);
 	});
 
 	pi.on("model_select", async (_event, ctx) => {
-		updateStatus(ctx);
+		await updateStatus(ctx);
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
-		updateStatus(ctx);
+		await updateStatus(ctx);
 	});
 
-	pi.on("before_provider_request", async (_event, ctx) => {
-		// Payloads are already built here. Observe late ownership changes, but
-		// never install a handler too late to apply to this request.
-		updateStatus(ctx, false);
+	pi.on("before_provider_request", (_event, ctx) => {
+		// The request already has its auth and payload. Only check late ownership
+		// changes here; do not resolve credentials again for an in-flight request.
+		if (!selectedOverlayInstalled(ctx)) ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {

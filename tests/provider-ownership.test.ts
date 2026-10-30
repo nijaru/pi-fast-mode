@@ -39,7 +39,7 @@ function response(text: string) {
 
 async function fixture(
 	factories: ExtensionFactory[], config: boolean | ConfigFile = false,
-	setup?: (runtime: ModelRuntime) => void, selectedModel = model,
+	setup?: (runtime: ModelRuntime) => void, selectedModel: Model<"openai-codex-responses" | "openai-responses"> = model,
 ) {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-fast-ownership-"));
 	cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
@@ -50,7 +50,7 @@ async function fixture(
 	const token = `e30.${Buffer.from(JSON.stringify({
 		"https://api.openai.com/auth": { chatgpt_account_id: "test" },
 	})).toString("base64url")}.sig`;
-	await credentials.modify(model.provider, async () => ({
+	await credentials.modify(selectedModel.provider, async () => ({
 		type: "oauth", access: token, refresh: "test", expires: Date.now() + 3_600_000,
 	}));
 	const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
@@ -123,23 +123,25 @@ function nativeProvider() {
 }
 
 /** The real stock API serializes requests; only the HTTP boundary is replaced. */
-async function stockRequest(runtime: ModelRuntime, full = false) {
+async function stockRequest(runtime: ModelRuntime, full = false, requestModel: Model<"openai-codex-responses" | "openai-responses"> = model, overrides: StreamOptions = {}, reportedTier?: string) {
 	let body: Record<string, unknown> | undefined;
 	let headers = new Headers();
 	const fetch = (async (_input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
 		headers = new Headers(init?.headers);
 		return new Response(`data: ${JSON.stringify({
 			type: "response.completed", response: {
-				id: "resp_test", status: "completed", output: [], service_tier: body?.service_tier ?? "default",
+				id: "resp_test", status: "completed", output: [], service_tier: reportedTier ?? body?.service_tier ?? "default",
 				usage: { input_tokens: 1_000_000, output_tokens: 500_000, total_tokens: 1_500_000 },
 			},
 		})}\n\n`, { headers: { "content-type": "text/event-stream" } });
 	}) as unknown as typeof globalThis.fetch;
 	const options = {
-		fetch, transport: "sse" as const, reasoningEffort: "high" as const,
+		fetch, transport: "sse" as const,
+		...(full ? { reasoningEffort: "high" as const } : { reasoning: "high" as const }),
 		onPayload(payload: unknown) { body = payload as Record<string, unknown>; },
+		...overrides,
 	};
-	const stream = full ? runtime.stream(model, context, options) : runtime.streamSimple(model, context, options);
+	const stream = full ? runtime.stream(requestModel, context, options) : runtime.streamSimple(requestModel, context, options);
 	const result = await stream.result();
 	expect(result.errorMessage).toBeUndefined();
 	expect(result.stopReason).toBe("stop");
@@ -218,6 +220,83 @@ describe("ModelRuntime provider ownership", () => {
 		expect(f.errors).toEqual([]);
 	});
 
+	test("OpenAI subscription tiers both entry points without changing API-key requests", async () => {
+		const openai: Model<"openai-responses"> = {
+			...model, provider: "openai", api: "openai-responses", id: "gpt-6.1-sol",
+			baseUrl: "https://api.openai.com/v1",
+		};
+		const f = await fixture([piFastMode], true, undefined, openai);
+		for (const full of [false, true]) {
+			const { body, result, headers } = await stockRequest(f.runtime, full, openai);
+			expect(body?.service_tier).toBe("priority");
+			expect(body?.reasoning).toEqual({ effort: "high", summary: "auto" });
+			expect(body?.max_output_tokens).toBeUndefined();
+			expect(headers.get("authorization")).toStartWith("Bearer e30.");
+			expect(result.usage.cost.total).toBeCloseTo(2);
+		}
+		expect(f.statuses.get(STATUS_KEY)).toContain("2.5×");
+		let observedTier: string | undefined;
+		const downgraded = await stockRequest(f.runtime, true, openai, {
+			onProviderStreamEvent(event) {
+				observedTier = (event as { response?: { service_tier?: string } }).response?.service_tier;
+			},
+		}, "default");
+		expect(observedTier).toBe("default");
+		expect(downgraded.body?.service_tier).toBe("priority");
+		expect(downgraded.result.usage.cost.total).toBeCloseTo(0.8);
+		for (const overrides of [{ apiKey: "sk-runtime-key" }, { headers: { Authorization: "Bearer sk-header-key" } }]) {
+			const { body, result } = await stockRequest(f.runtime, true, openai, overrides);
+			expect(body?.service_tier).toBeUndefined();
+			expect(result.usage.cost.total).toBeCloseTo(0.8);
+		}
+		const proxy = { ...openai, baseUrl: "https://proxy.invalid/v1" };
+		expect((await stockRequest(f.runtime, true, proxy)).body?.service_tier).toBeUndefined();
+		await f.credentials.modify("openai", async () => ({ type: "api_key", key: "sk-configured" }));
+		await f.session.prompt("/fast status");
+		expect(f.statuses.get(STATUS_KEY)).toBeUndefined();
+		expect(f.notices.at(-1)).toContain("unavailable");
+		expect((await stockRequest(f.runtime, true, openai)).body?.service_tier).toBeUndefined();
+		f.session.dispose();
+		expect(f.registry.getRegisteredProviderConfig("openai")).toBeUndefined();
+		expect(f.registry.getRegisteredProviderConfig("openai-codex")).toBeUndefined();
+		expect(f.errors).toEqual([]);
+	});
+
+	test("OpenAI API-key simple calls retain the stock output budget and context clamp", async () => {
+		const openai: Model<"openai-responses"> = {
+			...model, provider: "openai", api: "openai-responses", id: "gpt-6.1-sol",
+			baseUrl: "https://api.openai.com/v1", contextWindow: 8192,
+		};
+		const stock = await fixture([], false, undefined, openai);
+		const overlaid = await fixture([piFastMode], false, undefined, openai);
+		for (const f of [stock, overlaid]) {
+			await f.credentials.modify("openai", async () => ({ type: "api_key", key: "sk-test" }));
+		}
+		for (const overrides of [{}, { maxTokens: 32_000 }]) {
+			const baseline = await stockRequest(stock.runtime, false, openai, overrides);
+			const actual = await stockRequest(overlaid.runtime, false, openai, overrides);
+			expect(baseline.body?.max_output_tokens).toBeGreaterThan(0);
+			expect(baseline.body?.max_output_tokens).toBeLessThan(8192);
+			expect(actual.body).toEqual(baseline.body);
+		}
+	});
+
+	test("an OpenAI stream conflict leaves that owner intact without disabling Codex", async () => {
+		const custom = () => response("custom OpenAI");
+		const f = await fixture([pi => {
+			pi.registerProvider("openai", { api: "openai-responses", streamSimple: custom });
+		}, piFastMode], true);
+		expect(f.registry.getRegisteredProviderConfig("openai")?.streamSimple).toBe(custom);
+		expect((await stockRequest(f.runtime)).body?.service_tier).toBe("priority");
+		// Codex's "default" response label does not override its requested tier.
+		const legacy = await stockRequest(f.runtime, false, model, {}, "default");
+		expect(legacy.body?.service_tier).toBe("priority");
+		expect(legacy.result.usage.cost.total).toBeCloseTo(2);
+		f.session.dispose();
+		expect(f.registry.getRegisteredProviderConfig("openai")?.streamSimple).toBe(custom);
+		expect(f.registry.getRegisteredProviderConfig("openai-codex")).toBeUndefined();
+	});
+
 	test.each([
 		["included-quota", 2.5], ["credits", 2],
 	] as const)("%s pricing precedes independent usage adjustments and survives session accounting", async (billingBasis, multiplier) => {
@@ -259,7 +338,7 @@ describe("ModelRuntime provider ownership", () => {
 		expect(message.usage.input).toBe(1_000_000);
 		await f.session.prompt("/fast status");
 		expect(f.session.getSessionStats().cost).toBeCloseTo(0.8 * multiplier * 1.3);
-		expect(f.statuses.get(STATUS_KEY)).toBe(`· ⚡ FAST · ${multiplier}×`);
+		expect(f.statuses.get(STATUS_KEY)).toBe(`· ⚡ FAST requested · ${multiplier}× est.`);
 		expect(f.notices.at(-1)).toContain(billingBasis === "credits" ? "credits/Enterprise PAYG" : "included quota");
 		expect(f.errors).toEqual([]);
 	});
@@ -372,7 +451,7 @@ describe("ModelRuntime provider ownership", () => {
 		f.runtime.registerProvider(model.provider, { api: model.api, streamSimple: original.streamSimple });
 		await f.session.prompt("/fast status");
 		expect(f.statuses.get(STATUS_KEY)).toContain("2.5×");
-		expect(f.notices.at(-1)).toContain("Fast mode: priority service tier");
+		expect(f.notices.at(-1)).toContain("Priority requested");
 		const recovered = await stockRequest(f.runtime);
 		expect(recovered.body?.service_tier).toBe("priority");
 		expect(recovered.result.usage.cost.total).toBeCloseTo(2);
@@ -421,7 +500,7 @@ describe("ModelRuntime provider ownership", () => {
 		}
 		await f.session.prompt("/fast status");
 		expect(f.statuses.get(STATUS_KEY)).toContain("2.5×");
-		expect(f.notices.at(-1)).toContain("Fast mode: priority service tier");
+		expect(f.notices.at(-1)).toContain("Priority requested");
 		await f.session.prompt("/fast off");
 		const inactive = await stockRequest(f.runtime);
 		expect(inactive.body?.service_tier).toBeUndefined();
