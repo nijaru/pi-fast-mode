@@ -10,7 +10,7 @@ Fast mode trades higher usage for speed. This extension sends `service_tier: "pr
 pi install npm:@nijaru/pi-fast-mode
 ```
 
-Restart pi. Development checks target Pi 1.5.0. Requires pi / `@earendil-works/pi-ai` >= 0.84.2 — that is when `openai-codex-responses` began forwarding `serviceTier` to the request. The `openai` ChatGPT subscription login requires Pi 1.4.0+. The legacy `openai-codex` login is also supported. API-key requests receive no subscription tier or usage multiplier.
+Restart pi. Development checks target Pi 1.5.2. Requires pi / `@earendil-works/pi-ai` >= 0.84.2 — that is when `openai-codex-responses` began forwarding `serviceTier` to the request. The `openai` ChatGPT subscription login requires Pi 1.4.0+. The legacy `openai-codex` login is also supported. API-key requests receive no subscription tier or usage multiplier.
 
 Your pi catalog and account must expose the selected model; adding a model to this extension's defaults does not grant access or select it.
 
