@@ -28,6 +28,7 @@ const codexModel = (id: string) => ({
 	provider: "openai-codex",
 	id,
 	api: "openai-codex-responses" as const,
+	baseUrl: "https://chatgpt.com/backend-api",
 });
 
 const harnessSessions = new Set<string>();
@@ -579,54 +580,42 @@ async function captureCodexRequestBody(
 	mkdirSync(dirname(configPath), { recursive: true });
 	writeConfig(configPath, config);
 	let body: Record<string, unknown> | undefined;
-	const server = Bun.serve({
-		port: 0,
-		fetch: () => new Response(JSON.stringify({ error: { message: "captured" } }), {
+	const model = {
+		...codexModel(modelId),
+		name: modelId,
+		maxTokens: 32_000,
+		contextWindow: 272_000,
+		reasoning: true,
+		thinkingLevelMap: { minimal: "low" as const },
+		input: ["text" as const],
+		cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+	};
+	const { ctx, runtime, credentials, events, commands } = await extensionHarness({ cwd: dir, model });
+	const payloadToken = Buffer.from(JSON.stringify({
+		"https://api.openai.com/auth": { chatgpt_account_id: "test-account" },
+	})).toString("base64url");
+	await credentials.modify("openai-codex", async () => ({
+		type: "oauth", access: `e30.${payloadToken}.sig`, refresh: "test", expires: Date.now() + 3_600_000,
+	}));
+	await events.session_start?.({}, ctx);
+	await commands.fast?.handler("on", ctx);
+
+	const stream = runtime.streamSimple(model, {
+		systemPrompt: "test",
+		messages: [{ role: "user", content: "hello", timestamp: 0 }],
+	}, {
+		transport: "sse",
+		reasoning: "minimal",
+		fetch: (async () => new Response(JSON.stringify({ error: { message: "captured" } }), {
 			status: 400,
 			headers: { "content-type": "application/json" },
-		}),
+		})) as unknown as typeof globalThis.fetch,
+		onPayload(payload) {
+			body = payload as Record<string, unknown>;
+		},
 	});
-	try {
-		const model = {
-			id: modelId,
-			name: modelId,
-			provider: "openai-codex",
-			api: "openai-codex-responses" as const,
-			baseUrl: `http://127.0.0.1:${server.port}`,
-			maxTokens: 32_000,
-			contextWindow: 272_000,
-			reasoning: true,
-			thinkingLevelMap: { minimal: "low" as const },
-			input: ["text" as const],
-			cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
-		};
-		const { ctx, runtime, credentials, events, commands } = await extensionHarness({ cwd: dir, model });
-		await events.session_start?.({}, ctx);
-		await commands.fast?.handler("on", ctx);
-
-		const payloadToken = Buffer.from(JSON.stringify({
-			"https://api.openai.com/auth": { chatgpt_account_id: "test-account" },
-		})).toString("base64url");
-		await credentials.modify("openai-codex", async () => ({
-			type: "oauth", access: `e30.${payloadToken}.sig`, refresh: "test", expires: Date.now() + 3_600_000,
-		}));
-		const stream = runtime.streamSimple(model, {
-			systemPrompt: "test",
-			messages: [{ role: "user", content: "hello", timestamp: 0 }],
-		}, {
-			apiKey: `e30.${payloadToken}.sig`,
-			transport: "sse",
-			reasoning: "minimal",
-			onPayload(payload) {
-				body = payload as Record<string, unknown>;
-				return payload;
-			},
-		});
-		for await (const _event of stream) {}
-		return body;
-	} finally {
-		server.stop();
-	}
+	await stream.result();
+	return body;
 }
 
 describe("extension registration", () => {

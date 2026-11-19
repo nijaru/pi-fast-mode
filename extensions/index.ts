@@ -147,6 +147,13 @@ export const OPENAI_RESPONSES_SPEC: ApiTierSpec = {
 
 export const SPECS: readonly ApiTierSpec[] = [CODEX_RESPONSES_SPEC, OPENAI_RESPONSES_SPEC];
 
+/** Accept the base URL forms that Pi turns into its stock Codex Responses URL. */
+function isStockCodexEndpoint(baseUrl: string): boolean {
+	const backend = "https://chatgpt.com/backend-api";
+	const url = baseUrl.trim() ? baseUrl.replace(/\/+$/, "") : backend;
+	return url === backend || url === `${backend}/codex` || url === `${backend}/codex/responses`;
+}
+
 /** Mirror Pi's direct ChatGPT token route, never apply subscription rates to API keys/proxies. */
 function isOpenAISubscriptionRequest(model: Model<Api>, options: SimpleStreamOptions | undefined): boolean {
 	if (model.baseUrl !== "https://api.openai.com/v1" || !options?.apiKey || options.apiKey.startsWith("sk-")) return false;
@@ -654,8 +661,7 @@ function installFastModeOverlay(
 			(current.streamSimple === streamSimple || compactionObserver(current.streamSimple, streamSimple) !== undefined);
 	};
 	const streamSimple = (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) => {
-		const eligible = spec.provider !== "openai" || isOpenAISubscriptionRequest(model, options);
-		if (!eligible) {
+		if (spec.provider === "openai" && !isOpenAISubscriptionRequest(model, options)) {
 			// Pi's legacy overlay merges full/simple calls. Keep ordinary API-key
 			// calls on stock simple normalization; explicit API-specific options
 			// still need the full stream so reasoning effort and tiers survive.
@@ -665,7 +671,10 @@ function installFastModeOverlay(
 				? spec.streamRaw(model, context, buildFullOpenAIOptions(model, options, undefined))
 				: openAIResponsesApi().streamSimple(model as Model<"openai-responses">, context, options);
 		}
-		const resolution = inDispatchPath() ? resolveFastMode(model, session.state, SPECS, session.policy) : undefined;
+		// Use the dispatched URL after Pi's auth and endpoint resolution. A custom
+		// Codex endpoint keeps stock transport/options, but gets no Fast overlay.
+		const eligibleEndpoint = spec.provider !== CODEX_PROVIDER || isStockCodexEndpoint(model.baseUrl);
+		const resolution = eligibleEndpoint && inDispatchPath() ? resolveFastMode(model, session.state, SPECS, session.policy) : undefined;
 		const fullOptions = buildFullOpenAIOptions(model, options, resolution?.tier);
 		let reportedTier: string | undefined;
 		// Public Responses reports the processing tier. Legacy Codex can report
@@ -791,9 +800,15 @@ export default function piFastMode(pi: ExtensionAPI): void {
 
 	async function subscriptionSelected(ctx: ExtensionContext): Promise<boolean> {
 		const model = ctx.model;
-		if (model?.provider !== "openai") return true;
+		if (model?.provider !== "openai" && model?.provider !== CODEX_PROVIDER) return true;
+		// Keep the ownership diagnostic for Codex when someone else controls dispatch.
+		if (model.provider === CODEX_PROVIDER && !selectedOverlayInstalled(ctx)) return true;
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		return auth.ok && isOpenAISubscriptionRequest({ ...model, baseUrl: auth.baseUrl ?? model.baseUrl }, auth);
+		if (!auth.ok) return false;
+		const baseUrl = auth.baseUrl ?? model.baseUrl;
+		return model.provider === CODEX_PROVIDER
+			? isStockCodexEndpoint(baseUrl)
+			: isOpenAISubscriptionRequest({ ...model, baseUrl }, auth);
 	}
 
 	function selectedOverlayInstalled(ctx: ExtensionContext): boolean {
@@ -849,7 +864,9 @@ export default function piFastMode(pi: ExtensionAPI): void {
 			}
 			if (reason !== "startup") notify(subscription
 				? `Fast mode is on, but unavailable for ${modelKey}.`
-				: "Fast mode is unavailable for this connection. Use OpenAI’s ChatGPT subscription login; API keys receive no Fast tier or usage multiplier.");
+				: model?.provider === CODEX_PROVIDER
+					? "Fast mode is unavailable for this connection. Use the stock ChatGPT Codex endpoint."
+					: "Fast mode is unavailable for this connection. Use OpenAI’s ChatGPT subscription login; API keys receive no Fast tier or usage multiplier.");
 			return;
 		}
 		if (reason !== "startup") notify("Fast mode off.");

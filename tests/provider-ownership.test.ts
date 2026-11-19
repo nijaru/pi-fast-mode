@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,9 +12,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import piFastMode, { CONFIG_BASENAME, STATUS_KEY, writeConfig, type ConfigFile } from "../extensions/index.ts";
 
+const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const model: Model<"openai-codex-responses"> = {
 	id: "gpt-6-luna", name: "Luna", api: "openai-codex-responses", provider: "openai-codex",
-	baseUrl: "https://example.invalid", input: ["text"], reasoning: true,
+	baseUrl: CODEX_BASE_URL, input: ["text"], reasoning: true,
 	contextWindow: 272_000, maxTokens: 32_000,
 	cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
 };
@@ -126,7 +127,9 @@ function nativeProvider() {
 async function stockRequest(runtime: ModelRuntime, full = false, requestModel: Model<"openai-codex-responses" | "openai-responses"> = model, overrides: StreamOptions = {}, reportedTier?: string) {
 	let body: Record<string, unknown> | undefined;
 	let headers = new Headers();
-	const fetch = (async (_input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+	let url: string | undefined;
+	const fetch = (async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+		url = input instanceof Request ? input.url : String(input);
 		headers = new Headers(init?.headers);
 		return new Response(`data: ${JSON.stringify({
 			type: "response.completed", response: {
@@ -145,7 +148,7 @@ async function stockRequest(runtime: ModelRuntime, full = false, requestModel: M
 	const result = await stream.result();
 	expect(result.errorMessage).toBeUndefined();
 	expect(result.stopReason).toBe("stop");
-	return { body, headers, result };
+	return { body, headers, result, url };
 }
 
 describe("ModelRuntime provider ownership", () => {
@@ -264,7 +267,7 @@ describe("ModelRuntime provider ownership", () => {
 
 	test.each([
 		["openai", "openai-responses", "https://api.openai.com/v1"],
-		["openai-codex", "openai-codex-responses", "https://example.invalid"],
+		["openai-codex", "openai-codex-responses", CODEX_BASE_URL],
 	] as const)("GPT-6.2 uses the 2× included-quota rate on %s", async (provider, api, baseUrl) => {
 		const selectedModel = { ...model, id: "gpt-6.2-sol", provider, api, baseUrl };
 		const f = await fixture([piFastMode], true, undefined, selectedModel);
@@ -274,6 +277,34 @@ describe("ModelRuntime provider ownership", () => {
 		expect(result.usage.cost.total).toBeCloseTo(1.6);
 		expect(f.errors).toEqual([]);
 	});
+
+	test.each(["https://proxy.invalid/backend-api", "https://chatgpt.com/backend-api/custom"])(
+		"GPT-6.2 Codex leaves custom requests untiered and unrepriced (%s)", async baseUrl => {
+			const selected = { ...model, id: "gpt-6.2-sol", baseUrl };
+			const f = await fixture([piFastMode], {
+				active: true, multipliers: { "openai-codex/gpt-6.2-sol": 3 },
+			}, undefined, selected);
+			for (const full of [false, true]) {
+				const { url, body, result } = await stockRequest(f.runtime, full, selected);
+				expect(url).toBe(`${baseUrl}/codex/responses`);
+				expect(body?.model).toBe("gpt-6.2-sol");
+				expect(body?.service_tier).toBeUndefined();
+				expect(body?.reasoning).toEqual({ effort: "high", summary: "auto" });
+				expect(result.usage.cost.total).toBeCloseTo(0.8);
+			}
+			expect(f.statuses.get(STATUS_KEY)).toBeUndefined();
+			await f.session.prompt("/fast status");
+			expect(f.notices.at(-1)).toContain("stock ChatGPT Codex endpoint");
+			// The selected proxy does not prevent a different dispatch from using Fast.
+			const stock = await stockRequest(f.runtime, false, { ...selected, baseUrl: `${CODEX_BASE_URL}/codex/responses/` });
+			expect(stock.url).toBe(`${CODEX_BASE_URL}/codex/responses`);
+			expect(stock.body?.service_tier).toBe("priority");
+			expect(stock.result.usage.cost.total).toBeCloseTo(2.4);
+			f.session.dispose();
+			expect(f.registry.getRegisteredProviderConfig(model.provider)).toBeUndefined();
+			expect(f.errors).toEqual([]);
+		},
+	);
 
 	test("OpenAI API-key calls retain stock option shaping and context limits", async () => {
 		const openai: Model<"openai-responses"> = {
@@ -318,19 +349,6 @@ describe("ModelRuntime provider ownership", () => {
 		["included-quota", 2.5], ["credits", 2],
 	] as const)("%s pricing precedes independent usage adjustments and survives session accounting", async (billingBasis, multiplier) => {
 		let body: Record<string, unknown> | undefined;
-		const server = Bun.serve({ port: 0, async fetch(request) {
-			const bytes = new Uint8Array(await request.arrayBuffer());
-			body = JSON.parse(new TextDecoder().decode(
-				request.headers.get("content-encoding") === "zstd" ? Bun.zstdDecompressSync(bytes) : bytes,
-			)) as Record<string, unknown>;
-			return new Response(`data: ${JSON.stringify({
-				type: "response.completed", response: {
-					id: "resp_basis", status: "completed", output: [], service_tier: "priority",
-					usage: { input_tokens: 1_000_000, output_tokens: 500_000, total_tokens: 1_500_000 },
-				},
-			})}\n\n`, { headers: { "content-type": "text/event-stream" } });
-		} });
-		cleanups.push(() => server.stop(true));
 		const beforeAdjustment: number[] = [];
 		const adjustUsage: ExtensionFactory = pi => {
 			pi.on("message_end", event => {
@@ -340,10 +358,28 @@ describe("ModelRuntime provider ownership", () => {
 				for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) cost[key] *= 1.3;
 			});
 		};
-		const f = await fixture([piFastMode, adjustUsage], { active: true, billingBasis }, undefined, {
-			...model, id: "gpt-6-luna", baseUrl: `http://127.0.0.1:${server.port}`,
-		});
-		await f.session.prompt("hello");
+		const f = await fixture([piFastMode, adjustUsage], { active: true, billingBasis });
+		const mockFetch = async (input: string | URL | Request, init?: RequestInit) => {
+			expect(String(input)).toBe(`${CODEX_BASE_URL}/codex/responses`);
+			const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+			body = JSON.parse(new TextDecoder().decode(
+				new Headers(init?.headers).get("content-encoding") === "zstd" ? Bun.zstdDecompressSync(bytes) : bytes,
+			)) as Record<string, unknown>;
+			return new Response(`data: ${JSON.stringify({
+				type: "response.completed", response: {
+					id: "resp_basis", status: "completed", output: [], service_tier: "priority",
+					usage: { input_tokens: 1_000_000, output_tokens: 500_000, total_tokens: 1_500_000 },
+				},
+			})}\n\n`, { headers: { "content-type": "text/event-stream" } });
+		};
+		const fetchMock = spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(mockFetch, { preconnect: globalThis.fetch.preconnect }),
+		);
+		try {
+			await f.session.prompt("hello");
+		} finally {
+			fetchMock.mockRestore();
+		}
 		expect(body?.model).toBe("gpt-6-luna");
 		expect(body?.service_tier).toBe("priority");
 		expect(beforeAdjustment).toHaveLength(1);
