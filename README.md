@@ -2,7 +2,7 @@
 
 Toggle ChatGPT fast mode (`service_tier: "priority"`) in [pi](https://github.com/earendil-works/pi), with cost estimates for subscription usage.
 
-Fast mode trades higher usage for speed. This extension sends `service_tier: "priority"` for supported models signed in with a ChatGPT subscription when enabled and corrects pi's displayed cost using an explicit billing basis: included subscription quota (default, 2.5×) or purchased credits / Enterprise pay-as-you-go (2×). The displayed dollar amount is a model-rate estimate, not a cash invoice or a measurement of remaining quota. Models without an established Fast rate are never tiered.
+Fast mode trades higher usage for speed. This extension sends `service_tier: "priority"` for supported models signed in with a ChatGPT subscription when enabled and corrects pi's displayed cost using the model’s Fast multiplier for either included subscription quota (default) or purchased credits / Enterprise pay-as-you-go. The displayed dollar amount is a model-rate estimate, not a cash invoice or a measurement of remaining quota. Models without an established Fast rate are never tiered.
 
 ## Installation
 
@@ -29,22 +29,23 @@ Priority tiers and usage multipliers apply only to listed ChatGPT subscription m
 
 ## Supported models
 
-The following models are supported through both `openai` (ChatGPT subscription login) and `openai-codex`:
+The default list applies to both `openai` (ChatGPT subscription login) and `openai-codex`:
 
-- `gpt-6-astra`
-- `gpt-6.1-sol`
-- `gpt-6-sol`, `gpt-6-luna`
-- `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
+| Models | Included quota | Credits / Enterprise PAYG |
+| --- | ---: | ---: |
+| `gpt-6.2-astra`, `gpt-6.2-sol` | 2× | 2× |
+| `gpt-6.1-sol`, `gpt-6.1-terra` | 2.5× | 2× |
+| `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna` | 2.5× | 2× |
 
-For example, select `openai/gpt-6.1-sol` after signing in with ChatGPT, then run `/fast on`.
+For example, select `openai/gpt-6.1-terra` after signing in with ChatGPT, then run `/fast on`. GPT-6.2 needs a Pi model catalog that includes it; the catalog bundled with Pi 1.5.2 does not.
 
-All current defaults have established Fast multipliers of 2.5× for included subscription limits and 2× for purchased credits / Enterprise PAYG ([Speed](https://learn.chatgpt.com/docs/agent-configuration/speed), [Pricing](https://learn.chatgpt.com/docs/pricing), checked October 30, 2026). Availability depends on your account, client, rollout, and workspace permissions. The extension neither detects your plan nor switches billing basis when quota runs out. It supports Fast only, not Ultrafast.
+Rates checked November 19, 2026 against the [Codex Fast rate card](https://learn.chatgpt.com/docs/pricing#speed-multipliers). Availability depends on your account, client, rollout, and workspace permissions. The extension neither detects your plan nor switches billing basis when quota runs out. It supports [Fast, not Ultrafast](https://learn.chatgpt.com/docs/agent-configuration/speed).
 
-GPT-5.5 retired from Codex with ChatGPT sign-in on October 14, 2026; GPT-5.4 retired on August 31. Neither is a default, even if an older pi catalog still lists it. Their established historical rates remain for explicit allowlisting on compatible endpoints: GPT-5.5 at 2.5× included quota / 2× credits, GPT-5.4 at 2× included quota. GPT-5.4 on the credits basis requires a verified `multipliers` override. API-key sessions are unaffected by these retirements, but ChatGPT credit multipliers do not describe API billing ([Models](https://learn.chatgpt.com/docs/models)).
+GPT-5.6 Sol, Terra, and Luna are no longer in the current Fast rate table. If your endpoint still supports Fast for one of these models, you can explicitly allowlist it; the extension retains the historical estimate of 2.5× included quota / 2× credits. GPT-5.5 and GPT-5.4 [retired from Codex with ChatGPT sign-in](https://learn.chatgpt.com/docs/models). Where still supported, explicit allowlisting uses their historical rates: GPT-5.5 at 2.5× included quota / 2× credits, and GPT-5.4 at 2× included quota. GPT-5.4 on the credits basis requires a verified `multipliers` override.
 
 Model selection per request: `(built-in defaults ∪ allowlist) − blocklist`; the model must also use an overlaid provider/API pair (`openai` with `openai-responses`, or `openai-codex` with `openai-codex-responses`) and have an established fast-mode rate — a built-in rate-card entry for the selected billing basis or a configured `multipliers` entry keyed `provider/model`. Fast mode fails closed: a listed model without an established rate gets no priority tier or usage multiplier, and `/fast status` shows the exact config entry to add. Allowlisting a model on a custom provider does not install an overlay for it. Edit `allowlist`/`blocklist` in the config to override the built-in defaults — add a custom `models.json` entry on a spec'd API, or block `gpt-6-astra` for cost reasons. Only those provider/API pairs are modified, even if other models are allowlisted. On `openai`, the request must use a ChatGPT access token at `https://api.openai.com/v1`; API keys, proxy endpoints, and conflicting authorization headers do not receive subscription tiers or pricing.
 
-Other providers expose speed differently and are deliberately out of scope: Anthropic fast mode and Gemini priority inference are per-request tiers but need response-driven or rate-card pricing pi-ai does not surface yet (pi issue [#1381](https://github.com/earendil-works/pi/issues/1381)); OpenRouter and xAI ship speed as separate model variants (`:nitro`, Grok Fast), which need no extension.
+Other providers are out of scope. Their speed tiers and billing rules differ from ChatGPT subscription Fast mode.
 
 ## Configuration
 
@@ -69,11 +70,11 @@ Fast-mode state is recorded in each session's history, like model changes. `/fas
 }
 ```
 
-`billingBasis` accepts `"included-quota"` (default, preserving previous 2.5× estimates) or `"credits"` (purchased credits and Enterprise PAYG, 2×). Project configuration overrides global configuration per key; invalid basis values are ignored. Choose the basis explicitly to match the usage you want to estimate. The extension does not convert catalog dollars into credit units, infer quota consumption from API prices, or reconcile invoices.
+`billingBasis` accepts `"included-quota"` (default) or `"credits"` (purchased credits and Enterprise PAYG). The selected model determines the multiplier for that basis. Project configuration overrides global configuration per key; invalid basis values are ignored. Choose the basis explicitly to match the usage you want to estimate. The extension does not convert catalog dollars into credit units, infer quota consumption from API prices, or reconcile invoices.
 
-`multipliers` maps `provider/model` keys to finite, positive Fast multipliers. A configured value replaces the built-in multiplier for either basis; it is not multiplied by 2 or 2.5. For example, `"openai-codex/gpt-6-luna": 3` uses 3× on either basis. Use overrides for verified custom rates or allowlisted models without a built-in rate. A rate alone does not enable a model: non-default models also need `allowlist`. The project map replaces the global map.
+`multipliers` maps `provider/model` keys to finite, positive Fast multipliers. A configured value replaces the built-in multiplier for either basis; it does not stack with the built-in rate. For example, `"openai-codex/gpt-6-luna": 3` uses 3× on either basis. Use overrides for verified custom rates or allowlisted models without a built-in rate. A rate alone does not enable a model: non-default models also need `allowlist`. The project map replaces the global map.
 
-OpenAI renamed priority processing to Fast mode on July 30, 2026 and also accepts `service_tier: "fast"` on the wire. This extension keeps `serviceTier: "priority"` as its only accepted value — `"fast"` is not in the spec's supported tiers and would silently disable tiering if accepted.
+Keep `serviceTier` set to `"priority"`. The [public API accepts `"fast"` as an alias](https://developers.openai.com/api/docs/guides/priority-processing), but the [ChatGPT sign-in route has rejected that alias](https://github.com/nijaru/pi-fast-mode/issues/1).
 
 ## Provider compatibility
 

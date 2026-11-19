@@ -72,16 +72,19 @@ export type BillingBasis = (typeof BILLING_BASES)[number];
 
 /**
  * Verified Fast rates by billing basis, keyed `provider/model`.
- * https://learn.chatgpt.com/docs/agent-configuration/speed (2026-10-30).
+ * https://learn.chatgpt.com/docs/pricing#speed-multipliers (2026-11-19).
  * Credits includes purchased credits and Enterprise PAYG, not API-key billing.
- * Retired 5.5/5.4 retain established historical rates for explicit allowlisting
- * only. No credits-basis rate is established here for 5.4.
+ * GPT-5.x entries below are historical and require explicit allowlisting.
  */
 const CODEX_FAST_MULTIPLIER: Readonly<Record<string, Readonly<Partial<Record<BillingBasis, number>>>>> = {
+	"openai-codex/gpt-6.2-astra": { "included-quota": 2, credits: 2 },
+	"openai-codex/gpt-6.2-sol": { "included-quota": 2, credits: 2 },
 	"openai-codex/gpt-6-astra": { "included-quota": 2.5, credits: 2 },
 	"openai-codex/gpt-6.1-sol": { "included-quota": 2.5, credits: 2 },
+	"openai-codex/gpt-6.1-terra": { "included-quota": 2.5, credits: 2 },
 	"openai-codex/gpt-6-sol": { "included-quota": 2.5, credits: 2 },
 	"openai-codex/gpt-6-luna": { "included-quota": 2.5, credits: 2 },
+	// The current Fast rate card no longer lists GPT-5.6.
 	"openai-codex/gpt-5.6-sol": { "included-quota": 2.5, credits: 2 },
 	"openai-codex/gpt-5.6-terra": { "included-quota": 2.5, credits: 2 },
 	"openai-codex/gpt-5.6-luna": { "included-quota": 2.5, credits: 2 },
@@ -98,13 +101,13 @@ export const OFFICIAL_FAST_MULTIPLIER = {
 
 /** Built-in supported models for the OpenAI Codex provider. */
 export const DEFAULT_FAST_MODE_MODELS = [
-	"openai-codex/gpt-6-astra",
+	"openai-codex/gpt-6.2-astra",
+	"openai-codex/gpt-6.2-sol",
 	"openai-codex/gpt-6.1-sol",
+	"openai-codex/gpt-6.1-terra",
+	"openai-codex/gpt-6-astra",
 	"openai-codex/gpt-6-sol",
 	"openai-codex/gpt-6-luna",
-	"openai-codex/gpt-5.6-sol",
-	"openai-codex/gpt-5.6-terra",
-	"openai-codex/gpt-5.6-luna",
 ] as const;
 
 /** Request-tier and rate-card policy for one API. */

@@ -162,8 +162,8 @@ describe("isModelAllowed", () => {
 		expect(isModelAllowed(codexModel("contested"), SPECS, f)).toBe(false);
 	});
 	test("rejects an allowed model on the wrong api or provider", () => {
-		expect(isModelAllowed({ ...codexModel("gpt-5.6-luna"), api: "anthropic-messages" }, SPECS, policy)).toBe(false);
-		const custom = { ...codexModel("gpt-5.6-luna"), provider: "custom-codex" };
+		expect(isModelAllowed({ ...codexModel("gpt-6-luna"), api: "anthropic-messages" }, SPECS, policy)).toBe(false);
+		const custom = { ...codexModel("gpt-6-luna"), provider: "custom-codex" };
 		const allowlisted = buildFastModePolicy(SPECS, { allowlist: [{ provider: custom.provider, id: custom.id }] });
 		expect(isModelAllowed(custom, SPECS, allowlisted)).toBe(false);
 	});
@@ -196,12 +196,31 @@ describe("session state", () => {
 describe("resolveFastMode", () => {
 	const policy = buildFastModePolicy(SPECS, {});
 
-	test.each(["gpt-6-luna", "gpt-6-sol"])("tiers the new default %s on the legacy included-quota basis", id => {
+	test.each(["gpt-6-luna", "gpt-6-sol"])("tiers %s at 2.5× on the included-quota basis", id => {
 		expect(resolveFastMode(codexModel(id), stateOn, SPECS, policy)).toEqual({
 			tier: "priority", multiplier: 2.5, billingBasis: "included-quota", multiplierSource: "official",
 		});
 	});
-	test.each([["gpt-5.5", 2.5], ["gpt-5.4", 2]] as const)("retired %s requires explicit allowlisting but retains its historical rate", (id, multiplier) => {
+	test.each([
+		["gpt-6.2-astra", 2],
+		["gpt-6.2-sol", 2],
+		["gpt-6.1-terra", 2.5],
+	] as const)("tiers %s on both subscription routes at the published rates", (id, includedQuota) => {
+		for (const spec of SPECS) {
+			const model = { id, provider: spec.provider, api: spec.api };
+			expect(resolveFastMode(model, stateOn, SPECS, policy)).toEqual({
+				tier: "priority", multiplier: includedQuota, billingBasis: "included-quota", multiplierSource: "official",
+			});
+			const credits = buildFastModePolicy(SPECS, { billingBasis: "credits" });
+			expect(resolveFastMode(model, stateOn, SPECS, credits)).toEqual({
+				tier: "priority", multiplier: 2, billingBasis: "credits", multiplierSource: "official",
+			});
+		}
+	});
+	test.each([
+		["gpt-5.6-sol", 2.5], ["gpt-5.6-terra", 2.5], ["gpt-5.6-luna", 2.5],
+		["gpt-5.5", 2.5], ["gpt-5.4", 2],
+	] as const)("%s requires explicit allowlisting but retains its historical rate", (id, multiplier) => {
 		const model = codexModel(id);
 		expect(resolveFastMode(model, stateOn, SPECS, policy)).toBeUndefined();
 		const explicit = buildFastModePolicy(SPECS, { allowlist: [model] });
@@ -209,7 +228,7 @@ describe("resolveFastMode", () => {
 	});
 	test("billing basis changes the estimate, not the tier or activation", () => {
 		const credits = buildFastModePolicy(SPECS, { billingBasis: "credits" });
-		const model = codexModel("gpt-5.6-luna");
+		const model = codexModel("gpt-6-luna");
 		expect(resolveFastMode(model, stateOn, SPECS, credits)).toEqual({
 			tier: "priority", multiplier: 2, billingBasis: "credits", multiplierSource: "official",
 		});
@@ -222,16 +241,16 @@ describe("resolveFastMode", () => {
 		expect(fastMultiplierFor(codexModel("gpt-5.4"), credits)).toBeUndefined();
 	});
 	test("no tier when inactive", () => {
-		expect(resolveFastMode(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBeUndefined();
+		expect(resolveFastMode(codexModel("gpt-6-luna"), stateOff, SPECS, policy)).toBeUndefined();
 	});
 	test("no tier when the api rejects the configured tier", () => {
 		expect(
-			resolveFastMode(codexModel("gpt-5.6-luna"), { active: true, serviceTier: "flex" }, SPECS, policy),
+			resolveFastMode(codexModel("gpt-6-luna"), { active: true, serviceTier: "flex" }, SPECS, policy),
 		).toBeUndefined();
 	});
 	test("no tier for a blocked default", () => {
-		const f = buildFastModePolicy(SPECS, { blocklist: [parseModelKey("openai-codex/gpt-5.6-sol")!] });
-		expect(resolveFastMode(codexModel("gpt-5.6-sol"), stateOn, SPECS, f)).toBeUndefined();
+		const f = buildFastModePolicy(SPECS, { blocklist: [parseModelKey("openai-codex/gpt-6-sol")!] });
+		expect(resolveFastMode(codexModel("gpt-6-sol"), stateOn, SPECS, f)).toBeUndefined();
 	});
 	test("fails closed for an allowlisted model without an established rate", () => {
 		const f = buildFastModePolicy(SPECS, { allowlist: [parseModelKey("openai-codex/custom-model")!] });
@@ -264,7 +283,7 @@ describe("fast-mode pricing", () => {
 		expect(fastMultiplierFor(codexModel("gpt-6.1-sol"), policy)).toBe(2.5);
 		expect(fastMultiplierFor(codexModel("gpt-5.4"), policy)).toBe(2);
 		expect(fastMultiplierFor(codexModel("deepseek-v4-flash"), policy)).toBeUndefined();
-		expect(fastMultiplierFor({ provider: "custom-codex", id: "gpt-5.6-luna" }, policy)).toBeUndefined();
+		expect(fastMultiplierFor({ provider: "custom-codex", id: "gpt-6-luna" }, policy)).toBeUndefined();
 		expect(fastMultiplierFor(undefined, policy)).toBeUndefined();
 	});
 
@@ -291,7 +310,7 @@ describe("fast-mode pricing", () => {
 	});
 
 	const luna = {
-		id: "gpt-5.6-luna",
+		id: "gpt-6-luna",
 		cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, tiers: [] },
 	} as const;
 
@@ -315,7 +334,7 @@ describe("fast-mode pricing", () => {
 
 	test("selects the input-token cost tier before applying the multiplier", () => {
 		const tiered = {
-			id: "gpt-5.6-luna",
+			id: "gpt-6-luna",
 			cost: {
 				input: 0.2,
 				output: 1.2,
@@ -477,7 +496,7 @@ function captureWarnings(fn: () => void): string[] {
 
 describe("withFastModePricing", () => {
 	const model = {
-		id: "gpt-5.6-luna",
+		id: "gpt-6-luna",
 		cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25, tiers: [] },
 	};
 
@@ -658,7 +677,7 @@ describe("extension registration", () => {
 
 			const { ctx, events, commands, statuses, notices } = await extensionHarness({
 				cwd: dir,
-				model: codexModel("gpt-5.6-luna"),
+				model: codexModel("gpt-6-luna"),
 				entries: [{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } }],
 			});
 			await events.session_start?.({}, ctx);
@@ -706,7 +725,7 @@ describe("extension registration", () => {
 
 			const { ctx, events, commands, notices } = await extensionHarness({
 				cwd: dir,
-				model: codexModel("gpt-5.6-luna"),
+				model: codexModel("gpt-6-luna"),
 			});
 			await events.session_start?.({}, ctx);
 			await commands.fast?.handler("on", ctx);
@@ -760,7 +779,7 @@ describe("extension registration", () => {
 
 			const { ctx, events, entries } = await extensionHarness({
 				cwd: dir,
-				model: codexModel("gpt-5.6-luna"),
+				model: codexModel("gpt-6-luna"),
 				entries: [{ type: "message", message: { role: "user", content: "old" } }],
 			});
 			await events.session_start?.({ reason: "resume" }, ctx);
@@ -782,12 +801,12 @@ describe("extension registration", () => {
 			writeConfig(configPath, { active: true, persistState: true, serviceTier: "priority" });
 
 			const initialEntries = [
-				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
+				{ type: "model_change", provider: "openai-codex", modelId: "gpt-6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
 			];
 			const { ctx, events, statuses, entries } = await extensionHarness({
 				cwd: dir,
-				model: codexModel("gpt-5.6-luna"),
+				model: codexModel("gpt-6-luna"),
 				entries: initialEntries,
 				buildContextEntries: () => entries,
 			});
@@ -795,7 +814,7 @@ describe("extension registration", () => {
 
 			expect(statuses).toEqual(["· ⚡FAST"]);
 			expect(entries).toEqual([
-				{ type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-luna" },
+				{ type: "model_change", provider: "openai-codex", modelId: "gpt-6-luna" },
 				{ type: "thinking_level_change", thinkingLevel: "off" },
 				{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
 			]);
@@ -812,7 +831,7 @@ describe("extension registration", () => {
 
 			const { ctx, events, statuses } = await extensionHarness({
 				cwd: dir,
-				model: codexModel("gpt-5.6-luna"),
+				model: codexModel("gpt-6-luna"),
 				entries: [
 					{ type: "message", message: { role: "user", content: "old" } },
 					{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
@@ -832,9 +851,9 @@ describe("extension registration", () => {
 			const body = await captureCodexRequestBody(
 				dir,
 				{ active: false, persistState: false, serviceTier: "priority" },
-				"gpt-5.6-luna",
+				"gpt-6-luna",
 			);
-			expect(body?.model).toBe("gpt-5.6-luna");
+			expect(body?.model).toBe("gpt-6-luna");
 			expect(body?.service_tier).toBe("priority");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -860,8 +879,8 @@ describe("extension registration", () => {
 describe("statusText", () => {
 	const policy = buildFastModePolicy(SPECS, {});
 	test("shows a compact fast indicator when applied", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), stateOn, SPECS, policy)).toBe("⚡FAST");
-		expect(statusText(codexModel("gpt-6-luna"), stateOn, SPECS, buildFastModePolicy(SPECS, {
+		expect(statusText(codexModel("gpt-6-luna"), stateOn, SPECS, policy)).toBe("⚡FAST");
+		expect(statusText(codexModel("gpt-6.2-sol"), stateOn, SPECS, buildFastModePolicy(SPECS, {
 			billingBasis: "credits",
 		}))).toBe("⚡FAST");
 	});
@@ -873,7 +892,7 @@ describe("statusText", () => {
 		expect(statusText(codexModel("custom-model"), stateOn, SPECS, f)).toBe("⚡FAST");
 	});
 	test("stays empty whenever no fast mode resolves", () => {
-		expect(statusText(codexModel("gpt-5.6-luna"), stateOff, SPECS, policy)).toBe("");
+		expect(statusText(codexModel("gpt-6-luna"), stateOff, SPECS, policy)).toBe("");
 		expect(statusText(codexModel("deepseek-v4-flash"), stateOn, SPECS, policy)).toBe("");
 	});
 });
@@ -888,7 +907,7 @@ describe("session_tree", () => {
 
 			const { ctx, events, statuses } = await extensionHarness({
 				cwd: dir,
-			model: codexModel("gpt-5.6-luna"),
+			model: codexModel("gpt-6-luna"),
 				entries: [
 					{ type: "custom", customType: SESSION_STATE_TYPE, data: { active: true, serviceTier: "priority" } },
 				],
@@ -910,7 +929,7 @@ describe("session_tree", () => {
 
 			const { ctx, events, statuses } = await extensionHarness({
 				cwd: dir,
-			model: codexModel("gpt-5.6-luna"),
+			model: codexModel("gpt-6-luna"),
 				entries: [{ type: "message", message: { role: "user", content: "old" } }],
 			});
 			await events.session_tree?.({}, ctx);
@@ -973,7 +992,7 @@ describe("config write preservation", () => {
 
 			const { ctx, events, commands } = await extensionHarness({
 				cwd: dir,
-				model: codexModel("gpt-5.6-luna"),
+				model: codexModel("gpt-6-luna"),
 			});
 			await events.session_start?.({}, ctx);
 			await commands.fast?.handler("on", ctx);
@@ -1018,7 +1037,7 @@ describe("project trust", () => {
 		try {
 			const projectPath = join(dir, ".pi", "extensions", CONFIG_BASENAME);
 			mkdirSync(dirname(projectPath), { recursive: true });
-			writeConfig(projectPath, { active: true, blocklist: ["openai-codex/gpt-5.6-luna"] });
+			writeConfig(projectPath, { active: true, blocklist: ["openai-codex/gpt-6-luna"] });
 			const agentDir = join(dir, "home", ".pi", "agent");
 
 			const untrusted = resolveConfig(dir, agentDir, false);

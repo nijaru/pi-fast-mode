@@ -13,7 +13,7 @@ import {
 import piFastMode, { CONFIG_BASENAME, STATUS_KEY, writeConfig, type ConfigFile } from "../extensions/index.ts";
 
 const model: Model<"openai-codex-responses"> = {
-	id: "gpt-5.6-luna", name: "Luna", api: "openai-codex-responses", provider: "openai-codex",
+	id: "gpt-6-luna", name: "Luna", api: "openai-codex-responses", provider: "openai-codex",
 	baseUrl: "https://example.invalid", input: ["text"], reasoning: true,
 	contextWindow: 272_000, maxTokens: 32_000,
 	cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
@@ -259,6 +259,19 @@ describe("ModelRuntime provider ownership", () => {
 		f.session.dispose();
 		expect(f.registry.getRegisteredProviderConfig("openai")).toBeUndefined();
 		expect(f.registry.getRegisteredProviderConfig("openai-codex")).toBeUndefined();
+		expect(f.errors).toEqual([]);
+	});
+
+	test.each([
+		["openai", "openai-responses", "https://api.openai.com/v1"],
+		["openai-codex", "openai-codex-responses", "https://example.invalid"],
+	] as const)("GPT-6.2 uses the 2× included-quota rate on %s", async (provider, api, baseUrl) => {
+		const selectedModel = { ...model, id: "gpt-6.2-sol", provider, api, baseUrl };
+		const f = await fixture([piFastMode], true, undefined, selectedModel);
+		const { body, result } = await stockRequest(f.runtime, false, selectedModel);
+		expect(body?.model).toBe("gpt-6.2-sol");
+		expect(body?.service_tier).toBe("priority");
+		expect(result.usage.cost.total).toBeCloseTo(1.6);
 		expect(f.errors).toEqual([]);
 	});
 
